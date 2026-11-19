@@ -146,7 +146,7 @@ def is_infrastructure_failure(exc: BaseException) -> bool:
         module = str(getattr(type(current), "__module__", "") or "")
         if name in _INFRA_EXC_TYPE_NAMES:
             return True
-        if module.startswith("sqlalchemy.") or module.startswith("psycopg"):
+        if module.startswith(("sqlalchemy.", "psycopg")):
             return True
         if "sqlalchemy" in module and "Error" in name:
             return True
@@ -395,11 +395,11 @@ def classify_field_reason(reason: str | None) -> str:
         return "rate_limited"
     if text.startswith("transient_timeout") or "timeout" in text:
         return "timeout"
-    if text.startswith("transient_network") or text.startswith("transient_http"):
+    if text.startswith(("transient_network", "transient_http")):
         return "transient"
     if text.startswith("provider_validation"):
         return "provider_validation"
-    if text.startswith("stale_data") or text.startswith("stale:"):
+    if text.startswith(("stale_data", "stale:")):
         return "stale"
     if text.startswith("symbol_error:"):
         # Legacy catch-all from earlier collectors — treat as transient so retries fire.
@@ -497,7 +497,89 @@ def _provenance_from_mapping(field_name: str, raw: Mapping[str, Any]) -> Provena
     )
 
 
-def collect_first_pass_batch(
+def _collect_symbol_with_diagnostics(
+    stock_id: str,
+    *,
+    stock_loader: StockLoader,
+    candles_loader: HistoryCandlesLoader,
+    institutional_loader: InstitutionalLoader,
+    margin_loader: MarginLoader,
+    ownership_loader: OwnershipLoader,
+    key_stats_loader: KeyStatsLoader,
+    profitability_loader: ProfitabilityLoader | None,
+    theme_keys_loader: ThemeKeysLoader,
+    include_nonofficial_margins: bool,
+    captured_at: str,
+    now: datetime | None,
+    previous_fields: Mapping[str, Any] | None,
+    job_id: str | None,
+    symbol_deadline_seconds: float | None,
+    clock: Callable[[], float],
+) -> FirstPassSymbolRecord:
+    """Collect one symbol and attach per-symbol provider budget deltas (#362)."""
+    from app.services.http_client import (
+        clear_last_http_fetch_error,
+        get_last_http_fetch_error,
+        snapshot_provider_request_budget,
+    )
+
+    clear_last_http_fetch_error()
+    budget_before = snapshot_provider_request_budget()
+    try:
+        record = _collect_one(
+            stock_id,
+            stock_loader=stock_loader,
+            candles_loader=candles_loader,
+            institutional_loader=institutional_loader,
+            margin_loader=margin_loader,
+            ownership_loader=ownership_loader,
+            key_stats_loader=key_stats_loader,
+            profitability_loader=profitability_loader,
+            theme_keys_loader=theme_keys_loader,
+            include_nonofficial_margins=include_nonofficial_margins,
+            captured_at=captured_at,
+            now=now,
+            previous_fields=previous_fields,
+            job_id=job_id,
+            symbol_deadline_seconds=symbol_deadline_seconds,
+            clock=clock,
+        )
+    except Exception as exc:  # noqa: BLE001 — isolate unexpected per-symbol faults
+        if is_infrastructure_failure(exc):
+            raise
+        reason = provider_exception_reason(exc)
+        log_isolated_fault(
+            stock_id=stock_id,
+            stage="symbol",
+            source="collect_first_pass_batch",
+            exc=exc,
+            reason=reason,
+            job_id=job_id,
+        )
+        record = FirstPassSymbolRecord(
+            stock_id=stock_id,
+            stock_name=None,
+            name_status="unavailable",
+            name_source="catalog",
+            exchange=None,
+            market=None,
+            sector_theme_keys=[],
+            error=reason,
+        )
+        record.completeness = _symbol_completeness(record)
+    setattr(
+        record,
+        "_provider_diagnostics",
+        bounded_provider_diagnostics(
+            before=budget_before,
+            after=snapshot_provider_request_budget(),
+            last_http=get_last_http_fetch_error(),
+        ),
+    )
+    return record
+
+
+def collect_first_pass_batch(  # NOSONAR(python:S3776,python:S107) — loader fan-in API; body extracted
     stock_ids: Sequence[str],
     *,
     universe_version: str | None = None,
@@ -574,82 +656,35 @@ def collect_first_pass_batch(
                 budget_stopped = True
                 released_unstarted = list(deduped[index:])
                 break
-        from app.services.http_client import (
-            clear_last_http_fetch_error,
-            get_last_http_fetch_error,
-            snapshot_provider_request_budget,
+        record = _collect_symbol_with_diagnostics(
+            stock_id,
+            stock_loader=loader,
+            candles_loader=candles_loader or _default_stored_candles_loader,
+            institutional_loader=institutional_loader or _default_institutional,
+            margin_loader=margin_loader or _default_margin,
+            ownership_loader=ownership_loader or _default_ownership,
+            key_stats_loader=key_stats_loader or _default_key_stats,
+            profitability_loader=profitability_loader,
+            theme_keys_loader=themes,
+            include_nonofficial_margins=include_nonofficial_margins,
+            captured_at=captured_at,
+            now=calculation_now,
+            previous_fields=prior_map.get(stock_id),
+            job_id=job_id,
+            symbol_deadline_seconds=symbol_deadline_seconds,
+            clock=clock,
         )
-
-        # Per-symbol diagnostics: clear sticky last error and measure deltas.
-        clear_last_http_fetch_error()
-        budget_before = snapshot_provider_request_budget()
-        try:
-            records.append(
-                _collect_one(
-                    stock_id,
-                    stock_loader=loader,
-                    candles_loader=candles_loader or _default_stored_candles_loader,
-                    institutional_loader=institutional_loader or _default_institutional,
-                    margin_loader=margin_loader or _default_margin,
-                    ownership_loader=ownership_loader or _default_ownership,
-                    key_stats_loader=key_stats_loader or _default_key_stats,
-                    profitability_loader=profitability_loader,
-                    theme_keys_loader=themes,
-                    include_nonofficial_margins=include_nonofficial_margins,
-                    captured_at=captured_at,
-                    now=calculation_now,
-                    previous_fields=prior_map.get(stock_id),
-                    job_id=job_id,
-                    symbol_deadline_seconds=symbol_deadline_seconds,
-                    clock=clock,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 — isolate unexpected per-symbol faults
-            if is_infrastructure_failure(exc):
-                # PostgreSQL / lease / persistence must fail closed.
-                raise
-            reason = provider_exception_reason(exc)
-            log_isolated_fault(
-                stock_id=stock_id,
-                stage="symbol",
-                source="collect_first_pass_batch",
-                exc=exc,
-                reason=reason,
-                job_id=job_id,
-            )
-            failed = FirstPassSymbolRecord(
-                stock_id=stock_id,
-                stock_name=None,
-                name_status="unavailable",
-                name_source="catalog",
-                exchange=None,
-                market=None,
-                sector_theme_keys=[],
-                error=reason,
-            )
-            failed.completeness = _symbol_completeness(failed)
-            records.append(failed)
-        if records:
-            setattr(
-                records[-1],
-                "_provider_diagnostics",
-                bounded_provider_diagnostics(
-                    before=budget_before,
-                    after=snapshot_provider_request_budget(),
-                    last_http=get_last_http_fetch_error(),
-                ),
-            )
+        records.append(record)
         # Renew/check **before** incremental persist so a lost lease never writes.
         renew_failed = lease_renew is not None and not lease_renew()
         if renew_failed or (lease_lost_check is not None and lease_lost_check()):
             lease_lost = True
             released_unstarted = list(deduped[index + 1 :])
             break
-        if on_symbol_collected is not None and records:
-            if not on_symbol_collected(records[-1]):
-                lease_lost = True
-                released_unstarted = list(deduped[index + 1 :])
-                break
+        if on_symbol_collected is not None and not on_symbol_collected(record):
+            lease_lost = True
+            released_unstarted = list(deduped[index + 1 :])
+            break
 
     duration_ms = int(max(0.0, (clock() - started_at) * 1000.0))
     coverage = _coverage_summary(records)

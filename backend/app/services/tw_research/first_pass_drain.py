@@ -1107,7 +1107,7 @@ def _apply_batch_result(
     return job, flags
 
 
-def _run_drain_batches(
+def _run_drain_batches(  # NOSONAR(python:S3776) — batch loop control flow; #362 wires provider summary
     *,
     owner: str,
     run: ResearchRun,
@@ -1190,12 +1190,9 @@ def _run_drain_batches(
             provider_batch_summary = summary
         batches_run += int(flags.get("batches_delta") or 0)
         symbols_processed += int(flags.get("symbols_delta") or 0)
-        if flags.get("lease_held"):
-            lease_held = True
-        if flags.get("waiting_for_retry"):
-            waiting_for_retry = True
-        if flags.get("already_complete"):
-            already_complete = True
+        lease_held = lease_held or bool(flags.get("lease_held"))
+        waiting_for_retry = waiting_for_retry or bool(flags.get("waiting_for_retry"))
+        already_complete = already_complete or bool(flags.get("already_complete"))
         if flags.get("stop"):
             stop_reason = str(flags["stop"])
             break

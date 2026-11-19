@@ -5166,6 +5166,30 @@ def _payload_has_retryable_field_failure(payload: dict) -> bool:
     return False
 
 
+def _retry_due(payload: dict, *, now: datetime) -> bool:
+    next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+    return next_retry is None or next_retry <= now
+
+
+def _partial_first_pass_needs_work(payload: dict, *, now: datetime) -> bool:
+    """Partial rows: durable gaps stay idle; one-shot revalidate or retryable fields work."""
+    if payload.get("retryExhausted"):
+        return False
+    revalidation_attempts = int(payload.get("revalidationAttempts") or 0)
+    flagged = payload.get("revalidatePartial") is True and revalidation_attempts < 1
+    if not (flagged or _payload_has_retryable_field_failure(payload)):
+        return False
+    return _retry_due(payload, now=now)
+
+
+def _failed_first_pass_needs_work(payload: dict, *, now: datetime) -> bool:
+    if payload.get("retryExhausted"):
+        return False
+    if str(payload.get("failureClass") or "") == "permanent":
+        return False
+    return _retry_due(payload, now=now)
+
+
 def _first_pass_symbol_needs_work(
     row: TwResearchFirstPassSymbolResult | None,
     *,
@@ -5182,31 +5206,13 @@ def _first_pass_symbol_needs_work(
         # pending rows are claimed placeholders and should not be re-queued here.
         return True
     if status == "partial":
-        # Default: durable incomplete evidence (blank official PE, missing PEG).
-        # Reclaim when fields are retryable, or once via revalidatePartial
-        # (#362 Post-D1). revalidationAttempts >= 1 means the one-shot was spent.
-        if payload.get("retryExhausted"):
-            return False
-        revalidation_attempts = int(payload.get("revalidationAttempts") or 0)
-        flagged = (
-            payload.get("revalidatePartial") is True and revalidation_attempts < 1
-        )
-        if not (flagged or _payload_has_retryable_field_failure(payload)):
-            return False
-        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
-        return next_retry is None or next_retry <= now
+        return _partial_first_pass_needs_work(payload, now=now)
     if status == "deferred":
         if payload.get("retryExhausted"):
             return False
-        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
-        return next_retry is None or next_retry <= now
+        return _retry_due(payload, now=now)
     if status == "failed":
-        if payload.get("retryExhausted"):
-            return False
-        if str(payload.get("failureClass") or "") == "permanent":
-            return False
-        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
-        return next_retry is None or next_retry <= now
+        return _failed_first_pass_needs_work(payload, now=now)
     return True
 
 

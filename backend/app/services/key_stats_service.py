@@ -25,6 +25,7 @@ _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
+_JSON_ACCEPT = "application/json,text/plain,*/*"
 _TIMEOUT = 15
 _YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
 _FINNHUB_API = "https://finnhub.io/api/v1"
@@ -170,7 +171,7 @@ def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
             url,
             headers={
                 "User-Agent": _BROWSER_USER_AGENT,
-                "Accept": "application/json,text/plain,*/*",
+                "Accept": _JSON_ACCEPT,
             },
             timeout_seconds=_TIMEOUT,
             retries=0,
@@ -179,7 +180,7 @@ def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
             resource_id=symbol,
             retry_rate_limits=False,
         )
-    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (HttpFetchError, TimeoutError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -324,7 +325,7 @@ def _http_get_json_url(url: str) -> dict | None:
 
     request = Request(url)
     request.add_header("User-Agent", _BROWSER_USER_AGENT)
-    request.add_header("Accept", "application/json,text/plain,*/*")
+    request.add_header("Accept", _JSON_ACCEPT)
     try:
         timeout = capped_request_timeout_seconds(float(_TIMEOUT))
         started = time.perf_counter()
@@ -340,7 +341,7 @@ def _http_get_json_url(url: str) -> dict | None:
             return data if isinstance(data, dict) else None
     except CollectorDeadlineExceeded:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (HTTPError, URLError, TimeoutError, ValueError):
         record_provider_budget_event("finnhub", timeouts=1)
         return None
 
@@ -354,7 +355,7 @@ def _http_get_any(url: str) -> object | None:
 
     request = Request(url)
     request.add_header("User-Agent", _BROWSER_USER_AGENT)
-    request.add_header("Accept", "application/json,text/plain,*/*")
+    request.add_header("Accept", _JSON_ACCEPT)
     try:
         timeout = capped_request_timeout_seconds(float(_TIMEOUT))
         started = time.perf_counter()
@@ -370,7 +371,7 @@ def _http_get_any(url: str) -> object | None:
             return data
     except CollectorDeadlineExceeded:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (HTTPError, URLError, TimeoutError, ValueError):
         record_provider_budget_event("finnhub", timeouts=1)
         return None
 
@@ -777,7 +778,7 @@ def _fetch_official_pe_json(
             url,
             headers={
                 "User-Agent": _BROWSER_USER_AGENT,
-                "Accept": "application/json,text/plain,*/*",
+                "Accept": _JSON_ACCEPT,
             },
             timeout_seconds=float(_TIMEOUT),
             retries=0,
@@ -788,7 +789,7 @@ def _fetch_official_pe_json(
         )
     except CollectorDeadlineExceeded:
         raise
-    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+    except (HttpFetchError, TimeoutError, ValueError) as exc:
         raise _PeFetchTransient(str(exc)) from exc
 
 
