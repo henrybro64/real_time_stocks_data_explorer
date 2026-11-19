@@ -5144,6 +5144,28 @@ def _first_pass_symbol_matches_filters(
     return True
 
 
+def _payload_has_retryable_field_failure(payload: dict) -> bool:
+    """True when persisted field reasons are still classified as retryable."""
+    from app.services.tw_research.first_pass import (
+        dominant_transient_field_error,
+        field_reason_is_retryable,
+    )
+
+    fields = payload.get("fields")
+    if not isinstance(fields, dict):
+        return False
+    if dominant_transient_field_error(fields):
+        return True
+    for raw in fields.values():
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("status") or "") not in {"unavailable", "partial"}:
+            continue
+        if field_reason_is_retryable(raw.get("reason")):
+            return True
+    return False
+
+
 def _first_pass_symbol_needs_work(
     row: TwResearchFirstPassSymbolResult | None,
     *,
@@ -5153,18 +5175,31 @@ def _first_pass_symbol_needs_work(
     if row is None:
         return True
     status = str(row.status or "")
-    if status in {"ok", "partial", "pending"}:
-        # partial = usable incomplete evidence (missing PEG etc.); do not refetch.
+    payload = dict(row.payload_json or {})
+    if status == "ok":
+        return False
+    if status == "pending":
         # pending rows are claimed placeholders and should not be re-queued here.
-        return status == "pending"
+        return True
+    if status == "partial":
+        # Default: durable incomplete evidence (blank official PE, missing PEG).
+        # Reclaim only when fields are retryable or operator marked revalidatePartial
+        # (#362 Post-D1) — never discard preserved OK fields on re-collect.
+        if payload.get("retryExhausted"):
+            return False
+        if not (
+            payload.get("revalidatePartial") is True
+            or _payload_has_retryable_field_failure(payload)
+        ):
+            return False
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        return next_retry is None or next_retry <= now
     if status == "deferred":
-        payload = dict(row.payload_json or {})
         if payload.get("retryExhausted"):
             return False
         next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
         return next_retry is None or next_retry <= now
     if status == "failed":
-        payload = dict(row.payload_json or {})
         if payload.get("retryExhausted"):
             return False
         if str(payload.get("failureClass") or "") == "permanent":

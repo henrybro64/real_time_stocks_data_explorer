@@ -717,22 +717,35 @@ def _fetch_official_pe_json(
         raise _PeFetchTransient(str(exc)) from exc
 
 
+def _pe_transient_warning(exc: BaseException) -> str:
+    """Map a PE fetch failure to a retryable valuationWarning reason (#362 Post-D1).
+
+    Must stay aligned with ``provider_exception_reason`` markers so enrichment
+    classifies these as rate_limited/timeout/transient — never as permanent
+    ``official_pe_unavailable``.
+    """
+    cause: BaseException = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
+    # Lazy import avoids a module cycle (first_pass → enrichment → key_stats).
+    from app.services.tw_research.first_pass import provider_exception_reason
+
+    return provider_exception_reason(cause)
+
+
 def _fetch_twse_daily_pe_snapshot(
     target_day: date,
 ) -> tuple[dict[str, dict[str, object]], str | None] | None:
     hit, cached = _pe_cache_get("twse", target_day)
     if hit:
         return cached
-    try:
-        payload = _fetch_official_pe_json(
-            f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
-            provider_name="twse_pe",
-            resource_id=target_day.isoformat(),
-        )
-    except _PeFetchTransient:
-        return None
+    # Transient failures propagate as ``_PeFetchTransient`` (do not cache / do not
+    # collapse into a silent None that looks like an authoritative gap).
+    payload = _fetch_official_pe_json(
+        f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
+        provider_name="twse_pe",
+        resource_id=target_day.isoformat(),
+    )
     if not isinstance(payload, dict):
-        return None
+        raise _PeFetchTransient("provider_validation:TWSE_PE_payload_not_object")
     if str(payload.get("stat", "")).strip().upper() != "OK":
         # Definitive no-data (holiday / empty day file) — cache the miss.
         _pe_cache_set("twse", target_day, _PE_NO_DATA)
@@ -741,7 +754,7 @@ def _fetch_twse_daily_pe_snapshot(
     fields = payload.get("fields")
     rows = payload.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
-        return None
+        raise _PeFetchTransient("provider_validation:TWSE_PE_fields_or_data_invalid")
 
     symbol_index = _field_index(fields, "證券代號")
     pe_index = _field_index(fields, "本益比")
@@ -776,32 +789,34 @@ def _fetch_tpex_daily_pe_snapshot(
     hit, cached = _pe_cache_get("tpex", target_day)
     if hit:
         return cached
-    try:
-        payload = _fetch_official_pe_json(
-            f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
-            provider_name="tpex_pe",
-            resource_id=target_day.isoformat(),
-        )
-    except _PeFetchTransient:
-        return None
+    # Transient failures propagate; callers stamp retryable valuationWarning.
+    payload = _fetch_official_pe_json(
+        f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
+        provider_name="tpex_pe",
+        resource_id=target_day.isoformat(),
+    )
     if not isinstance(payload, dict):
-        return None
+        raise _PeFetchTransient("provider_validation:TPEx_PE_payload_not_object")
     if str(payload.get("stat", "")).strip().lower() != "ok":
         _pe_cache_set("tpex", target_day, _PE_NO_DATA)
         return None
 
     tables = payload.get("tables")
     if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
-        return None
+        raise _PeFetchTransient("provider_validation:TPEx_PE_tables_invalid")
 
     table = tables[0]
     fields = table.get("fields")
     rows = table.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
-        return None
+        raise _PeFetchTransient("provider_validation:TPEx_PE_fields_or_data_invalid")
 
+    # Live peQryDate fields (2026-11-19): 股票代號, 公司名稱, 本益比, 每股股利,
+    # 股利年度, 殖利率(%), 股價淨值比, 財報年/季 — no close price column.
     symbol_index = _field_index(fields, "股票代號")
     pe_index = _field_index(fields, "本益比")
+    pb_index = _field_index(fields, "股價淨值比")
+    yield_index = _field_index(fields, "殖利率(%)", "殖利率")
     parsed_rows: dict[str, dict[str, object]] = {}
     for row in rows:
         if not isinstance(row, list):
@@ -810,10 +825,14 @@ def _fetch_tpex_daily_pe_snapshot(
         if not symbol:
             continue
         pe_ratio, pe_status = _parse_official_pe_value(_row_value(row, pe_index))
+        pb_ratio = _parse_number(_row_value(row, pb_index))
+        div_yield = _parse_number(_row_value(row, yield_index))
         parsed_rows[symbol] = {
             "peRatio": pe_ratio,
             "peStatus": pe_status,
             "priceUsed": None,
+            "pbRatio": pb_ratio,
+            "dividendYieldPercent": div_yield,
         }
     snapshot = (parsed_rows, _yyyymmdd_to_iso(payload.get("date")))
     _pe_cache_set("tpex", target_day, snapshot)
@@ -828,9 +847,14 @@ def _apply_tw_official_valuation(
     fetch_snapshot = _fetch_tpex_daily_pe_snapshot if stock.exchange == "TPEx" else _fetch_twse_daily_pe_snapshot
     source_label = "TPEx official daily P/E" if stock.exchange == "TPEx" else "TWSE official daily P/E"
     saw_official_snapshot = False
+    last_transient: BaseException | None = None
 
     for session_day in _recent_weekdays(_quote_local_date(stock, quote_record)):
-        snapshot = fetch_snapshot(session_day)
+        try:
+            snapshot = fetch_snapshot(session_day)
+        except _PeFetchTransient as exc:
+            last_transient = exc
+            continue
         if snapshot is None:
             continue
         saw_official_snapshot = True
@@ -899,13 +923,17 @@ def _apply_tw_official_valuation(
                 True,
             )
 
+        # Authoritative blank / missing PE cell on a published row (e.g. N/A).
         return (
             _with_official_pb_yield(
                 _set_valuation_fields(
                     out,
                     pe_ratio=None,
                     valuation_as_of=valuation_as_of,
-                    valuation_warning=f"{source_label} did not report a usable P/E value.",
+                    valuation_warning=(
+                        f"{source_label} did not report a usable P/E value "
+                        f"(peStatus={row.get('peStatus') or 'missing'})."
+                    ),
                 )
             ),
             True,
@@ -917,6 +945,17 @@ def _apply_tw_official_valuation(
                 out,
                 pe_ratio=None,
                 valuation_warning="P/E is not reported for ETF or fund instruments.",
+            ),
+            True,
+        )
+    if last_transient is not None and not saw_official_snapshot:
+        # All recent sessions failed transiently — stamp a retryable warning so
+        # first-pass cannot collapse this into permanent official_pe_unavailable.
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_warning=_pe_transient_warning(last_transient),
             ),
             True,
         )

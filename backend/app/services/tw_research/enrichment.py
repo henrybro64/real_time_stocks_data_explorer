@@ -460,6 +460,10 @@ def _enrich_valuation(
     pe_source_label = str(pe_source or "key_stats_service")
     pe_as_of = str(valuation_as_of) if valuation_as_of else None
     if pe is None:
+        # Prefer explicit valuationWarning (transient_* / rate_limited / blank PE).
+        # Bare official_pe_unavailable is reserved for unknown/authoritative gaps
+        # without a provider warning (#362 Post-D1).
+        pe_reason = str(warning or "official_pe_unavailable")
         _set_field(
             result,
             field="official_pe",
@@ -467,7 +471,7 @@ def _enrich_valuation(
             source=pe_source_label,
             source_as_of=pe_as_of,
             captured_at=captured_at,
-            reason=str(warning or "official_pe_unavailable"),
+            reason=pe_reason,
         )
     else:
         _set_field(

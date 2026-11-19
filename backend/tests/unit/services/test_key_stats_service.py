@@ -850,7 +850,8 @@ def test_pe_snapshot_does_not_cache_transient_timeout(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
     day = date(2024, 6, 28)
-    assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is None
+    with pytest.raises(key_stats_service._PeFetchTransient):
+        key_stats_service._fetch_twse_daily_pe_snapshot(day)
     second = key_stats_service._fetch_twse_daily_pe_snapshot(day)
     assert second is not None
     assert "2330" in second[0]
@@ -879,6 +880,134 @@ def test_pe_snapshot_caches_definitive_no_data(monkeypatch: pytest.MonkeyPatch) 
     assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is None
     assert calls["n"] == 1
     key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_tpex_pe_snapshot_parses_pb_and_dividend_yield(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live peQryDate fields include 殖利率(%) and 股價淨值比 (#362 Post-D1)."""
+    from datetime import date
+
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+    def fake_fetch(*_a, **_k):
+        return {
+            "stat": "ok",
+            "date": "20240628",
+            "tables": [
+                {
+                    "fields": [
+                        "股票代號",
+                        "公司名稱",
+                        "本益比",
+                        "每股股利",
+                        "股利年度",
+                        "殖利率(%)",
+                        "股價淨值比",
+                        "財報年/季",
+                    ],
+                    "data": [["3293", "鈊象", "19.74", "6.5", "113", "3.10", "4.25", "113/1"]],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
+    day = date(2024, 6, 28)
+    snapshot = key_stats_service._fetch_tpex_daily_pe_snapshot(day)
+    assert snapshot is not None
+    row = snapshot[0]["3293"]
+    assert row["peRatio"] == 19.74
+    assert row["pbRatio"] == 4.25
+    assert row["dividendYieldPercent"] == 3.10
+    assert row["priceUsed"] is None
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_tw_valuation_transient_pe_sets_retryable_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient PE fetch must not look like official_pe_unavailable (#362)."""
+    from app.services import key_stats_service
+
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=100.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=100.0,
+        timestamp="2024-06-28T13:30:00+08:00",
+        is_market_open=False,
+    )
+
+    def boom(_day):
+        raise key_stats_service._PeFetchTransient("upstream timed out") from TimeoutError(
+            "upstream timed out"
+        )
+
+    monkeypatch.setattr(key_stats_service, "_fetch_twse_daily_pe_snapshot", boom)
+    out, handled = key_stats_service._apply_tw_official_valuation({}, stock, quote)
+    assert handled is True
+    assert out.get("peRatio") is None
+    warning = str(out.get("valuationWarning") or "")
+    assert warning.startswith("transient_timeout:") or "timeout" in warning.lower()
+    assert "official_pe_unavailable" not in warning
+
+
+def test_tw_valuation_blank_pe_cell_is_authoritative_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stock = stock_record(
+        "TW:3363",
+        market="TW",
+        symbol="3363",
+        name="测试",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:3363",
+        last_price=10.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=10.0,
+        timestamp="2024-06-28T13:30:00+08:00",
+        is_market_open=False,
+    )
+
+    def fake_snapshot(_day):
+        return (
+            {
+                "3363": {
+                    "peRatio": None,
+                    "peStatus": "missing",
+                    "priceUsed": 10.0,
+                    "pbRatio": 1.2,
+                    "dividendYieldPercent": 0.0,
+                }
+            },
+            "2024-06-28",
+        )
+
+    monkeypatch.setattr(key_stats_service, "_fetch_twse_daily_pe_snapshot", fake_snapshot)
+    out, handled = key_stats_service._apply_tw_official_valuation({}, stock, quote)
+    assert handled is True
+    assert out.get("peRatio") is None
+    assert out.get("pbRatio") == 1.2
+    warning = str(out.get("valuationWarning") or "")
+    assert "did not report a usable P/E" in warning
+    assert "peStatus=missing" in warning
 
 
 def test_pe_snapshot_deadline_exceeded_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:

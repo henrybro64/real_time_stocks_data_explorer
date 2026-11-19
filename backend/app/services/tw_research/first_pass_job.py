@@ -173,6 +173,42 @@ def _merge_preserved_ok_fields(
     return merged
 
 
+def _bounded_provider_diagnostics() -> dict[str, Any]:
+    """Sanitized, size-capped provider counters + last HTTP class for DB payload."""
+    from app.services.http_client import (
+        get_last_http_fetch_error,
+        snapshot_provider_request_budget,
+    )
+
+    budget = snapshot_provider_request_budget()
+    providers: dict[str, dict[str, float | int]] = {}
+    for index, (name, stats) in enumerate(sorted(budget.items())):
+        if index >= 8:
+            break
+        providers[str(name)[:64]] = {
+            "requests": int(stats.get("requests") or 0),
+            "timeouts": int(stats.get("timeouts") or 0),
+            "retries": int(stats.get("retries") or 0),
+            "rate_limited": int(stats.get("rate_limited") or 0),
+            "cache_hits": int(stats.get("cache_hits") or 0),
+            "cache_misses": int(stats.get("cache_misses") or 0),
+            "bytes": int(stats.get("bytes") or 0),
+        }
+    diagnostics: dict[str, Any] = {
+        "providers": providers,
+        "capturedAt": datetime.now(UTC).isoformat(),
+    }
+    last = get_last_http_fetch_error()
+    if last is not None:
+        diagnostics["lastHttp"] = {
+            "classification": getattr(last, "classification", None),
+            "statusCode": getattr(last, "status_code", None),
+            "retryAfterSeconds": getattr(last, "retry_after_seconds", None)
+            or getattr(last, "retry_after", None),
+        }
+    return diagnostics
+
+
 def _enrich_symbol_payload(
     record: FirstPassSymbolRecord,
     *,
@@ -224,6 +260,8 @@ def _enrich_symbol_payload(
             for key, value in payload["fields"].items()
             if isinstance(value, dict) and value.get("status") == "ok"
         )
+        # Operator recovery flag is consumed once a failed retry is scheduled.
+        payload.pop("revalidatePartial", None)
     else:
         payload["attemptCount"] = max(prior_attempts, 1)
         prog_key = _programming_error_field_key(record)
@@ -234,6 +272,13 @@ def _enrich_symbol_payload(
         payload["retryExhausted"] = False
         payload["nextRetryAt"] = None
         payload.pop("preservedOkFields", None)
+        if prior.get("revalidatePartial") is True and status == "partial":
+            # Keep flag only if still partial after re-collect (operator may clear).
+            payload["revalidatePartial"] = True
+        else:
+            payload.pop("revalidatePartial", None)
+    # Bounded provider diagnostics (no URLs/tokens) for production investigation.
+    payload["providerDiagnostics"] = _bounded_provider_diagnostics()
     return payload
 
 

@@ -1388,6 +1388,7 @@ class ResearchRunStore:
             run.technical_scan_id,
             tuple(run.notes[-3:]),
         )
+        prior_progress = dict(run.dimensions.get("firstPassProgress") or {})
         # Prefer phase2 when a technical scan is attached.
         if run.technical_scan_id:
             self._reconcile_from_scan_locked(run)
@@ -1400,7 +1401,11 @@ class ResearchRunStore:
             run.technical_scan_id,
             tuple(run.notes[-3:]),
         )
-        if before != after:
+        after_progress = dict(run.dimensions.get("firstPassProgress") or {})
+        # Persist when counts/errors move even if phase/status stay ``running``
+        # (#362 Post-D1 stale firstPassProgress).
+        progress_changed = prior_progress != after_progress
+        if before != after or progress_changed:
             run.updated_at = datetime.now(UTC).isoformat()
             return True
         return False
