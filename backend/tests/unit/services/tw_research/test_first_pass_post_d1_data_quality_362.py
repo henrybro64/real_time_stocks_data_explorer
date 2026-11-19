@@ -358,3 +358,69 @@ def test_reconcile_persists_when_only_first_pass_progress_counts_change() -> Non
     assert run.updated_at is not None
     assert run.dimensions["firstPassProgress"]["processed"] == 13
 
+
+
+def test_status_code_beats_url_digits_when_classifying_provider_errors() -> None:
+    """URL text like ``date=20260429`` must not turn a 5xx/JSON failure into a 429."""
+    from app.services.http_client import HttpFetchError
+    from app.services.tw_research.first_pass import provider_exception_reason
+
+    url = "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d?date=20260429"
+    upstream = HttpFetchError(f"Retryable HTTP 503 from {url}", status_code=503)
+    assert provider_exception_reason(upstream).startswith("transient_http:503")
+    bad_json = HttpFetchError(f"Failed to parse JSON from {url}", status_code=200)
+    assert not provider_exception_reason(bad_json).startswith("rate_limited")
+    real_429 = HttpFetchError(
+        f"Retryable HTTP 429 from {url}", status_code=429, retry_after_seconds=12
+    )
+    assert provider_exception_reason(real_429) == (
+        "rate_limited:HTTP429:HttpFetchError:retry_after=12"
+    )
+    # No status attached → text heuristic still applies.
+    assert provider_exception_reason(RuntimeError("HTTP 429")).startswith("rate_limited")
+
+
+def test_sticky_429_from_symbol_one_not_stamped_on_symbol_two() -> None:
+    """Per-symbol diagnostics clear the thread-local last HTTP error (#362 Post-D1)."""
+    from app.services import http_client
+    from app.services.http_client import HttpFetchError
+    from app.services.tw_research.first_pass import collect_first_pass_batch
+    from tests.unit.services.tw_research.test_first_pass_budget_circuit_348_349 import (
+        _base_collectors,
+    )
+
+    collectors = _base_collectors()
+    base_key_stats = collectors["key_stats_loader"]
+
+    def key_stats_with_429_on_first(stock_id, *args, **kwargs):
+        if stock_id.endswith("2330"):
+            http_client._remember_http_fetch_error(
+                HttpFetchError(
+                    "HTTP 429",
+                    status_code=429,
+                    classification="rate_limited",
+                    retry_after_seconds=30,
+                )
+            )
+        return base_key_stats(stock_id, *args, **kwargs)
+
+    collectors["key_stats_loader"] = key_stats_with_429_on_first
+    http_client.clear_last_http_fetch_error()
+    try:
+        result = collect_first_pass_batch(
+            ["TW:2330", "TW:2454"],
+            time_budget_seconds=900,
+            symbol_deadline_seconds=None,
+            **collectors,
+        )
+    finally:
+        http_client.clear_last_http_fetch_error()
+
+    assert [r.stock_id for r in result.records] == ["TW:2330", "TW:2454"]
+    first = result.records[0]._provider_diagnostics  # type: ignore[attr-defined]
+    second = result.records[1]._provider_diagnostics  # type: ignore[attr-defined]
+    assert first["lastHttp"]["statusCode"] == 429
+    assert "lastHttp" not in second
+    # Bounded, sanitized payload: provider map capped and no URLs.
+    assert len(first["providers"]) <= 8
+    assert "://" not in repr(first) and "://" not in repr(second)

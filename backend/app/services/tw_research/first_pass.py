@@ -309,7 +309,16 @@ def provider_exception_reason(exc: BaseException) -> str:
     # transient (#348).
     if isinstance(exc, (TypeError, AttributeError)):
         return f"programming_error:{name}"
-    if status_int == 429 or "429" in lower or "rate limit" in lower or "too many requests" in lower:
+    # A known HTTP status is authoritative: the bare "429" text heuristic only
+    # applies when no status is attached, because exception text often embeds
+    # the request URL (e.g. TWSE ``date=20260429``) and would misclassify a 5xx
+    # or JSON failure as a rate limit (#362 Post-D1).
+    if (
+        status_int == 429
+        or (status_int is None and "429" in lower)
+        or "rate limit" in lower
+        or "too many requests" in lower
+    ):
         suffix = f":retry_after={retry_after}" if retry_after is not None else ""
         return f"rate_limited:HTTP429:{name}{suffix}"
     if status_int is not None and status_int >= 500:

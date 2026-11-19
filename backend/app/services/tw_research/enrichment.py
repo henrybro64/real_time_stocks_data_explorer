@@ -444,18 +444,15 @@ def _enrich_ownership(
 
 
 def _valuation_warning_is_transient(reason: str | None) -> bool:
-    """True for retryable PE warnings (avoid importing first_pass — cycle)."""
-    text = str(reason or "").strip().lower()
-    if not text:
+    """True for retryable PE warnings, using the canonical field classifier.
+
+    Lazy import: ``first_pass`` imports this module at load time (#362).
+    """
+    if not str(reason or "").strip():
         return False
-    return (
-        text.startswith("rate_limited")
-        or "429" in text
-        or text.startswith("transient_")
-        or "timeout" in text
-        or text.startswith("provider_validation")
-        or text.startswith("negative_cache:")
-    )
+    from app.services.tw_research.first_pass import field_reason_is_retryable
+
+    return field_reason_is_retryable(reason)
 
 
 def _enrich_valuation(

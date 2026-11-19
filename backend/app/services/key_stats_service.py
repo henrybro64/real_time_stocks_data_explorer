@@ -115,24 +115,36 @@ def _pe_cache_set(
             _pe_no_data_expires.pop(dropped, None)
 
 
+_PE_NEG_CACHE_PREFIX = "negative_cache:"
+_PE_NEG_CACHE_REASON_MAX = 160
+
+
 def _pe_transient_neg_get(board: str, target_day: date) -> str | None:
-    """Return cached failure kind if still fresh, else None."""
+    """Return the cached machine-readable failure reason if still fresh, else None."""
     key = (board, target_day.isoformat())
     with _pe_snapshot_cache_lock:
         entry = _pe_transient_neg_cache.get(key)
         if entry is None:
             return None
-        expires, kind = entry
+        expires, reason = entry
         if time.monotonic() >= expires:
             _pe_transient_neg_cache.pop(key, None)
             return None
         _pe_transient_neg_cache.move_to_end(key)
-        return kind
+        return reason
 
 
-def _pe_transient_neg_set(board: str, target_day: date, *, kind: str = "transient") -> None:
+def _pe_transient_neg_set(board: str, target_day: date, *, reason: str) -> None:
+    """Remember a transient day-file failure briefly, keeping its original reason.
+
+    The stored value is the durable reason (e.g. ``transient_http:503:HttpFetchError``)
+    so a cache hit for a batch mate stays retryable with the same class — never a
+    bare marker that ``classify_field_reason`` would treat as permanent (#362).
+    """
     key = (board, target_day.isoformat())
-    label = "rate_limited" if kind == "rate_limited" else "transient"
+    label = (str(reason or "").strip() or "transient_network:unknown")[
+        :_PE_NEG_CACHE_REASON_MAX
+    ]
     with _pe_snapshot_cache_lock:
         _pe_transient_neg_cache[key] = (
             time.monotonic() + _PE_TRANSIENT_NEG_TTL_SECONDS,
@@ -144,13 +156,8 @@ def _pe_transient_neg_set(board: str, target_day: date, *, kind: str = "transien
 
 
 def _pe_transient_is_rate_limited(exc: BaseException) -> bool:
-    text = str(exc).lower()
-    if "negative_cache:rate_limited" in text or text.startswith("rate_limited"):
-        return True
-    if "429" in text:
-        return True
-    warning = _pe_transient_warning(exc).lower()
-    return warning.startswith("rate_limited") or "429" in warning
+    """True when the classified PE failure is a rate limit (HTTP 429)."""
+    return _pe_transient_warning(exc).startswith("rate_limited")
 
 
 def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
@@ -788,26 +795,22 @@ def _fetch_official_pe_json(
 def _pe_transient_warning(exc: BaseException) -> str:
     """Map a PE fetch failure to a retryable valuationWarning reason (#362 Post-D1).
 
-    Must stay aligned with ``provider_exception_reason`` markers so enrichment
-    classifies these as rate_limited/timeout/transient — never as permanent
-    ``official_pe_unavailable``.
+    Classification uses the underlying exception (HTTP status first), never a
+    substring of the raw message: that text embeds the request URL, and
+    persisting it would also drop the ``retry_after=N`` hint.
     """
     text = str(exc or "").strip()
-    lower = text.lower()
-    # Prefer explicit markers on ``_PeFetchTransient`` / negative-cache hits.
-    if lower.startswith("rate_limited") or "429" in lower:
-        return text if lower.startswith("rate_limited") else f"rate_limited:{text}"
-    if "negative_cache:rate_limited" in lower:
-        return "rate_limited:negative_cache"
-    if lower.startswith("negative_cache:"):
-        return f"transient:{text}"
-    if lower.startswith("transient_") or lower.startswith("provider_validation:"):
-        return text
-    cause: BaseException = exc.__cause__ if isinstance(exc.__cause__, BaseException) else exc
+    if text.startswith(_PE_NEG_CACHE_PREFIX):
+        cached = text[len(_PE_NEG_CACHE_PREFIX) :].strip() or "transient_network:unknown"
+        return f"{cached}:negative_cache"
+    cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else None
+    if cause is None and text.startswith("provider_validation:"):
+        # Raised by our own payload validation — already a durable reason.
+        return text[:_PE_NEG_CACHE_REASON_MAX]
     # Lazy import avoids a module cycle (first_pass → enrichment → key_stats).
     from app.services.tw_research.first_pass import provider_exception_reason
 
-    return provider_exception_reason(cause)
+    return provider_exception_reason(cause if cause is not None else exc)
 
 
 def _load_official_pe_snapshot(
@@ -823,15 +826,14 @@ def _load_official_pe_snapshot(
     hit, cached = _pe_cache_get(board, target_day)
     if hit:
         return cached
-    cached_kind = _pe_transient_neg_get(board, target_day)
-    if cached_kind is not None:
-        raise _PeFetchTransient(f"negative_cache:{cached_kind}")
+    cached_reason = _pe_transient_neg_get(board, target_day)
+    if cached_reason is not None:
+        raise _PeFetchTransient(f"{_PE_NEG_CACHE_PREFIX}{cached_reason}")
     try:
         payload = fetch_payload()
         snapshot = parse_payload(payload)
     except _PeFetchTransient as exc:
-        kind = "rate_limited" if _pe_transient_is_rate_limited(exc) else "transient"
-        _pe_transient_neg_set(board, target_day, kind=kind)
+        _pe_transient_neg_set(board, target_day, reason=_pe_transient_warning(exc))
         raise
     if snapshot is None:
         _pe_cache_set(board, target_day, _PE_NO_DATA)

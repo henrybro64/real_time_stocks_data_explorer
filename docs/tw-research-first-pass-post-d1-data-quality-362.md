@@ -44,6 +44,12 @@ executor notes (`docs/tw-research-first-pass-executor-362-366.md`).
   can be rechecked.
 - **429 / rate limit:** weekday lookback stops immediately; a short process-local negative
   cache (≈90s) per `(board, day)` prevents batch mates from re-requesting the same day.
+  A cache hit reuses the original durable reason with a `:negative_cache` suffix
+  (e.g. `transient_http:503:HttpFetchError:negative_cache`), so batch mates stay
+  retryable and keep any `retry_after=N` hint.
+- **429 classification:** a known HTTP status is authoritative. The bare `"429"` text
+  heuristic applies only when no status is attached, because error text embeds the
+  request URL (e.g. TWSE `date=20260429`). Raw URLs are never persisted in reasons.
 - **OK fields** are preserved across retries (`_merge_preserved_ok_fields`).
 - **`revalidatePartial`:** one-shot reclaim. `_enrich_symbol_payload` always pops the flag,
   increments `revalidationAttempts`, and records `revalidatedAt` +
@@ -105,7 +111,14 @@ Do **not** run until this PR is approved/merged and Stage D2 is separately autho
    WHERE job_id = '<authoritative-fpj-id>'
      AND status = 'partial'
      AND payload_json->'fields'->'official_pe'->>'reason' = 'official_pe_unavailable'
-     AND stock_id = ANY(ARRAY['TW:6202','TW:6451','TW:8358']::text[]);  -- edit list
+     AND stock_id = ANY(ARRAY['TW:6202','TW:6451','TW:8358']::text[])  -- edit list
+     -- Enforce the no-live-lease precondition in the statement itself.
+     AND EXISTS (
+       SELECT 1 FROM tw_research_first_pass_jobs j
+       WHERE j.job_id = tw_research_first_pass_symbol_results.job_id
+         AND (j.reserve_expires_at IS NULL OR j.reserve_expires_at < now())
+     );
+   -- Expect "UPDATE 3". "UPDATE 0" with a live lease → ROLLBACK and wait.
 
    -- Verify
    SELECT stock_id,

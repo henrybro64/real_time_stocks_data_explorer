@@ -1164,3 +1164,100 @@ def test_finnhub_http_timeout_capped_to_remaining_deadline(monkeypatch: pytest.M
         }
     assert captured
     assert captured[0] <= 3.0 + 1e-6
+
+
+def _twse_stock(symbol: str):
+    return stock_record(
+        f"TW:{symbol}",
+        market="TW",
+        symbol=symbol,
+        name=symbol,
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+
+
+def _twse_quote():
+    return quote_record(
+        "TW:2330",
+        last_price=100.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=100.0,
+        timestamp="2024-06-28T13:30:00+08:00",
+        is_market_open=False,
+    )
+
+
+def test_real_429_keeps_retry_after_and_never_persists_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real HttpFetchError text embeds the URL; the reason must come from the status."""
+    from app.services import http_client
+    from app.services.http_client import HttpFetchError
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+    def fake_fetch_json(url, **_kwargs):
+        raise HttpFetchError(
+            f"Retryable HTTP 429 from {url}",
+            status_code=429,
+            classification="rate_limited",
+            retry_after_seconds=30,
+        )
+
+    monkeypatch.setattr(http_client, "fetch_json", fake_fetch_json)
+    out, handled = key_stats_service._apply_tw_official_valuation(
+        {}, _twse_stock("2330"), _twse_quote()
+    )
+    assert handled is True
+    warning = str(out.get("valuationWarning") or "")
+    assert warning.startswith("rate_limited:HTTP429:HttpFetchError")
+    assert "retry_after=30" in warning
+    assert "://" not in warning
+    assert "twse.com.tw" not in warning
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_negative_cache_hit_for_5xx_stays_retryable_with_one_request_per_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch mate served from the negative cache must not become a permanent partial."""
+    from collections import Counter
+
+    from app.services import http_client
+    from app.services.http_client import HttpFetchError
+    from app.services.tw_research.first_pass import (
+        classify_field_reason,
+        field_reason_is_retryable,
+    )
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    calls: Counter[str] = Counter()
+
+    def fake_fetch_json(url, **_kwargs):
+        calls[url] += 1
+        raise HttpFetchError(
+            f"Retryable HTTP 503 from {url}",
+            status_code=503,
+            classification="http_error",
+        )
+
+    monkeypatch.setattr(http_client, "fetch_json", fake_fetch_json)
+    warnings = []
+    for symbol in ("2330", "2317", "2454"):
+        out, handled = key_stats_service._apply_tw_official_valuation(
+            {}, _twse_stock(symbol), _twse_quote()
+        )
+        assert handled is True
+        warnings.append(str(out.get("valuationWarning") or ""))
+
+    assert calls, "expected upstream attempts for the first symbol"
+    assert max(calls.values()) == 1
+    for warning in warnings:
+        assert field_reason_is_retryable(warning), warning
+        assert classify_field_reason(warning) == "transient"
+        assert warning.startswith("transient_http:503")
+    assert warnings[1].endswith(":negative_cache")
+    key_stats_service.clear_official_pe_snapshot_cache()
