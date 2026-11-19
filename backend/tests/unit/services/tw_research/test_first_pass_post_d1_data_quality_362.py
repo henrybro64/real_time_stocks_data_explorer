@@ -31,6 +31,12 @@ def _pe_field(reason: str) -> ProvenanceField:
     )
 
 
+def test_symbol_not_in_snapshot_is_non_retryable_permanent() -> None:
+    reason = "official_pe_symbol_not_in_snapshot"
+    assert classify_field_reason(reason) == "permanent"
+    assert field_reason_is_retryable(reason) is False
+
+
 def test_transient_pe_warning_is_retryable_and_failed_status() -> None:
     reason = "transient_timeout:TimeoutError"
     assert classify_field_reason(reason) == "timeout"

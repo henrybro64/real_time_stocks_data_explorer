@@ -93,6 +93,7 @@ _PERMANENT_FIELD_REASON_MARKERS = (
     "official_yield_not_present",
     "official_yield_not_retrieved",
     "official_pe_no_recent_snapshot",
+    "official_pe_symbol_not_in_snapshot",
     "same_definition_historical",
     "cash_flow_adapter",
     "balance_sheet_adapter",

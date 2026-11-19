@@ -1261,3 +1261,189 @@ def test_negative_cache_hit_for_5xx_stays_retryable_with_one_request_per_day(
         assert warning.startswith("transient_http:503")
     assert warnings[1].endswith(":negative_cache")
     key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def _snapshot_without_symbol(as_of: str = "2024-06-27") -> tuple[dict, str]:
+    return (
+        {
+            "9999": {
+                "peRatio": 10.0,
+                "peStatus": None,
+                "priceUsed": 1.0,
+                "pbRatio": 1.0,
+                "dividendYieldPercent": 1.0,
+            }
+        },
+        as_of,
+    )
+
+
+def test_transient_then_ok_snapshot_without_symbol_stays_retryable_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Today 503 + older OK file missing the stock → retryable 503 warning (#362)."""
+    from datetime import date
+
+    from app.services.http_client import HttpFetchError
+    from app.services.tw_research.first_pass import field_reason_is_retryable
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    days = key_stats_service._recent_weekdays(date(2024, 6, 28))
+    first, second = days[0], days[1]
+
+    def fake_snapshot(day):
+        if day == first:
+            raise key_stats_service._PeFetchTransient("HTTP 503") from HttpFetchError(
+                "HTTP 503",
+                status_code=503,
+                classification="http_error",
+            )
+        if day == second:
+            return _snapshot_without_symbol()
+        return None
+
+    monkeypatch.setattr(key_stats_service, "_fetch_twse_daily_pe_snapshot", fake_snapshot)
+    out, handled = key_stats_service._apply_tw_official_valuation(
+        {}, _twse_stock("2330"), _twse_quote()
+    )
+    assert handled is True
+    warning = str(out.get("valuationWarning") or "")
+    assert warning.startswith("transient_http:503")
+    assert field_reason_is_retryable(warning) is True
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_transient_then_ok_snapshot_without_symbol_stays_retryable_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    from app.services.tw_research.first_pass import field_reason_is_retryable
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    days = key_stats_service._recent_weekdays(date(2024, 6, 28))
+    first, second = days[0], days[1]
+
+    def fake_snapshot(day):
+        if day == first:
+            raise key_stats_service._PeFetchTransient(
+                "upstream timed out"
+            ) from TimeoutError("upstream timed out")
+        if day == second:
+            return _snapshot_without_symbol()
+        return None
+
+    monkeypatch.setattr(key_stats_service, "_fetch_twse_daily_pe_snapshot", fake_snapshot)
+    out, handled = key_stats_service._apply_tw_official_valuation(
+        {}, _twse_stock("2330"), _twse_quote()
+    )
+    assert handled is True
+    warning = str(out.get("valuationWarning") or "")
+    assert warning.startswith("transient_timeout:")
+    assert field_reason_is_retryable(warning) is True
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_all_ok_snapshots_without_symbol_is_non_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.tw_research.first_pass import field_reason_is_retryable
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_twse_daily_pe_snapshot",
+        lambda _day: _snapshot_without_symbol(),
+    )
+    out, handled = key_stats_service._apply_tw_official_valuation(
+        {}, _twse_stock("2330"), _twse_quote()
+    )
+    assert handled is True
+    warning = str(out.get("valuationWarning") or "")
+    assert warning == "official_pe_symbol_not_in_snapshot"
+    assert field_reason_is_retryable(warning) is False
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_pe_stat_empty_or_missing_is_provider_validation_not_no_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    day = date(2024, 6, 28)
+    for payload in ({}, {"stat": ""}):
+        calls = {"n": 0}
+
+        def fake_fetch(*_a, payload=payload, **_k):
+            calls["n"] += 1
+            return payload
+
+        monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
+        with pytest.raises(key_stats_service._PeFetchTransient) as excinfo:
+            key_stats_service._fetch_twse_daily_pe_snapshot(day)
+        assert "provider_validation:TWSE_PE_stat_unexpected" in str(excinfo.value)
+        assert calls["n"] == 1
+        # Neg-cache would block a second call; clear to prove it was not no-data cached.
+        key_stats_service.clear_official_pe_snapshot_cache()
+        with pytest.raises(key_stats_service._PeFetchTransient):
+            key_stats_service._fetch_twse_daily_pe_snapshot(day)
+        assert calls["n"] == 2
+        key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_pe_stat_busy_or_error_is_provider_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    day = date(2024, 6, 28)
+
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_official_pe_json",
+        lambda *_a, **_k: {"stat": "系統忙碌中"},
+    )
+    with pytest.raises(key_stats_service._PeFetchTransient) as twse_exc:
+        key_stats_service._fetch_twse_daily_pe_snapshot(day)
+    assert str(twse_exc.value) == "provider_validation:TWSE_PE_stat_unexpected"
+    assert "系統忙碌中" not in str(twse_exc.value)
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_official_pe_json",
+        lambda *_a, **_k: {"stat": "error"},
+    )
+    with pytest.raises(key_stats_service._PeFetchTransient) as tpex_exc:
+        key_stats_service._fetch_tpex_daily_pe_snapshot(day)
+    assert str(tpex_exc.value) == "provider_validation:TPEx_PE_stat_unexpected"
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_twse_ok_with_empty_data_is_provider_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_official_pe_json",
+        lambda *_a, **_k: {
+            "stat": "OK",
+            "fields": ["證券代號", "本益比", "收盤價", "股價淨值比", "殖利率(%)"],
+            "data": [],
+        },
+    )
+    with pytest.raises(key_stats_service._PeFetchTransient) as excinfo:
+        key_stats_service._fetch_twse_daily_pe_snapshot(date(2024, 6, 28))
+    assert str(excinfo.value) == "provider_validation:TWSE_PE_empty_data"
+    key_stats_service.clear_official_pe_snapshot_cache()

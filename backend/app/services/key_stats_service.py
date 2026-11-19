@@ -845,17 +845,35 @@ def _load_official_pe_snapshot(
     return snapshot
 
 
+_PE_NO_DATA_STAT_MARKERS = ("查無資料", "沒有符合條件", "no data")
+
+
+def _pe_stat_is_definitive_no_data(stat: object) -> bool:
+    """True for known empty-day / no-match provider messages (holiday files)."""
+    text = str(stat or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _PE_NO_DATA_STAT_MARKERS)
+
+
 def _parse_twse_pe_payload(
     payload: object,
 ) -> tuple[dict[str, dict[str, object]], str | None] | None:
     if not isinstance(payload, dict):
         raise _PeFetchTransient("provider_validation:TWSE_PE_payload_not_object")
-    if str(payload.get("stat", "")).strip().upper() != "OK":
+    stat = payload.get("stat")
+    if str(stat or "").strip().upper() == "OK":
+        pass
+    elif _pe_stat_is_definitive_no_data(stat):
         return None
+    else:
+        raise _PeFetchTransient("provider_validation:TWSE_PE_stat_unexpected")
     fields = payload.get("fields")
     rows = payload.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
         raise _PeFetchTransient("provider_validation:TWSE_PE_fields_or_data_invalid")
+    if not rows:
+        raise _PeFetchTransient("provider_validation:TWSE_PE_empty_data")
     symbol_index = _field_index(fields, "證券代號")
     pe_index = _field_index(fields, "本益比")
     price_index = _field_index(fields, "收盤價")
@@ -884,8 +902,13 @@ def _parse_tpex_pe_payload(
 ) -> tuple[dict[str, dict[str, object]], str | None] | None:
     if not isinstance(payload, dict):
         raise _PeFetchTransient("provider_validation:TPEx_PE_payload_not_object")
-    if str(payload.get("stat", "")).strip().lower() != "ok":
+    stat = payload.get("stat")
+    if str(stat or "").strip().lower() == "ok":
+        pass
+    elif _pe_stat_is_definitive_no_data(stat):
         return None
+    else:
+        raise _PeFetchTransient("provider_validation:TPEx_PE_stat_unexpected")
     tables = payload.get("tables")
     if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
         raise _PeFetchTransient("provider_validation:TPEx_PE_tables_invalid")
@@ -894,6 +917,8 @@ def _parse_tpex_pe_payload(
     rows = table.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
         raise _PeFetchTransient("provider_validation:TPEx_PE_fields_or_data_invalid")
+    if not rows:
+        raise _PeFetchTransient("provider_validation:TPEx_PE_empty_data")
     # Live peQryDate fields (2026-11-19): 股票代號, 公司名稱, 本益比, 每股股利,
     # 股利年度, 殖利率(%), 股價淨值比, 財報年/季 — no close price column.
     symbol_index = _field_index(fields, "股票代號")
@@ -1063,9 +1088,10 @@ def _apply_tw_official_valuation(
             ),
             True,
         )
-    if last_transient is not None and not saw_official_snapshot:
-        # All recent sessions failed transiently — stamp a retryable warning so
-        # first-pass cannot collapse this into permanent official_pe_unavailable.
+    # Stock row never found across the weekday walk.
+    if last_transient is not None:
+        # Prefer retryable warning even when an older day file loaded without
+        # this symbol (e.g. today 503 + yesterday OK but missing the stock).
         return (
             _set_valuation_fields(
                 out,
@@ -1074,7 +1100,16 @@ def _apply_tw_official_valuation(
             ),
             True,
         )
-    if saw_no_data_only and not saw_official_snapshot and last_transient is None:
+    if saw_official_snapshot:
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_warning="official_pe_symbol_not_in_snapshot",
+            ),
+            True,
+        )
+    if saw_no_data_only:
         # Every weekday returned definitive no-data (holiday / empty day file).
         return (
             _set_valuation_fields(
@@ -1084,7 +1119,7 @@ def _apply_tw_official_valuation(
             ),
             True,
         )
-    return out, saw_official_snapshot
+    return out, False
 
 
 def _apply_us_valuation(
