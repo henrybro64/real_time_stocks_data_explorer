@@ -5183,14 +5183,15 @@ def _first_pass_symbol_needs_work(
         return True
     if status == "partial":
         # Default: durable incomplete evidence (blank official PE, missing PEG).
-        # Reclaim only when fields are retryable or operator marked revalidatePartial
-        # (#362 Post-D1) — never discard preserved OK fields on re-collect.
+        # Reclaim when fields are retryable, or once via revalidatePartial
+        # (#362 Post-D1). revalidationAttempts >= 1 means the one-shot was spent.
         if payload.get("retryExhausted"):
             return False
-        if not (
-            payload.get("revalidatePartial") is True
-            or _payload_has_retryable_field_failure(payload)
-        ):
+        revalidation_attempts = int(payload.get("revalidationAttempts") or 0)
+        flagged = (
+            payload.get("revalidatePartial") is True and revalidation_attempts < 1
+        )
+        if not (flagged or _payload_has_retryable_field_failure(payload)):
             return False
         next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
         return next_retry is None or next_retry <= now

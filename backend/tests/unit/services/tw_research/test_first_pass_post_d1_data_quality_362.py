@@ -172,7 +172,154 @@ def test_partial_revalidate_flag_schedules_work_without_dropping_ok_fields() -> 
     assert payload["fields"]["institutional_5d"]["status"] == "ok"
     assert payload["fields"]["institutional_5d"]["value"] == {"lots": 1}
     assert payload.get("revalidatePartial") is None
+    assert payload["revalidationAttempts"] == 1
+    assert payload["revalidationOutcome"] == "failed"
+    assert payload.get("revalidatedAt")
     assert payload["nextRetryAt"] is not None
+
+
+def test_revalidate_still_partial_is_one_shot_not_reclaimed() -> None:
+    """Flagged partial → re-collect still blank PE → needs_work False next tick."""
+    now = datetime.now(UTC)
+    prior = {
+        "revalidatePartial": True,
+        "fields": {
+            "official_pe": {
+                "status": "unavailable",
+                "reason": "official_pe_unavailable",
+            },
+            "institutional_5d": {"status": "ok", "value": {"lots": 1}},
+        },
+        "nextRetryAt": None,
+        "retryExhausted": False,
+    }
+    blank = (
+        "TWSE official daily P/E did not report a usable P/E value (peStatus=missing)."
+    )
+    record = FirstPassSymbolRecord(
+        stock_id="TW:6202",
+        stock_name="x",
+        name_status="ok",
+        name_source="catalog",
+        exchange="TWSE",
+        market="TW",
+        sector_theme_keys=[],
+        fields={"official_pe": _pe_field(blank)},
+        completeness={"fieldsOk": 4, "fieldsUnavailable": 1},
+    )
+    payload = _enrich_symbol_payload(record, status="partial", previous_payload=prior)
+    assert payload.get("revalidatePartial") is None
+    assert payload["revalidationAttempts"] == 1
+    assert payload["revalidationOutcome"] == "partial"
+    assert payload["nextRetryAt"] is None
+
+    row = SimpleNamespace(status="partial", payload_json=payload)
+    assert repo_mod._first_pass_symbol_needs_work(row, now=now) is False
+
+    # Even if an operator re-sets the flag, attempts >= 1 blocks reclaim via flag.
+    payload["revalidatePartial"] = True
+    row2 = SimpleNamespace(status="partial", payload_json=payload)
+    assert repo_mod._first_pass_symbol_needs_work(row2, now=now) is False
+
+
+def test_revalidate_to_ok_records_outcome() -> None:
+    prior = {
+        "revalidatePartial": True,
+        "fields": {
+            "official_pe": {
+                "status": "unavailable",
+                "reason": "official_pe_unavailable",
+            }
+        },
+        "nextRetryAt": None,
+        "retryExhausted": False,
+    }
+    record = FirstPassSymbolRecord(
+        stock_id="TW:2330",
+        stock_name="x",
+        name_status="ok",
+        name_source="catalog",
+        exchange="TWSE",
+        market="TW",
+        sector_theme_keys=[],
+        fields={
+            "official_pe": ProvenanceField(
+                field="official_pe",
+                status="ok",
+                source="key_stats_service",
+                value={"peRatio": 20.0},
+            )
+        },
+        completeness={"fieldsOk": 5, "fieldsUnavailable": 0},
+    )
+    payload = _enrich_symbol_payload(record, status="ok", previous_payload=prior)
+    assert payload.get("revalidatePartial") is None
+    assert payload["revalidationAttempts"] == 1
+    assert payload["revalidationOutcome"] == "ok"
+    assert payload["nextRetryAt"] is None
+    assert repo_mod._first_pass_symbol_needs_work(
+        SimpleNamespace(status="ok", payload_json=payload),
+        now=datetime.now(UTC),
+    ) is False
+
+
+def test_enrich_valuation_transient_pe_marks_pb_yield_not_retrieved() -> None:
+    result = EnrichmentResult(stock_id="TW:2330", qualified=True)
+
+    def loader(_sid: str):
+        return {
+            "peRatio": None,
+            "valuationWarning": "rate_limited:HTTP429:HttpFetchError:retry_after=30",
+            "peRatioSource": "TWSE official daily P/E",
+        }
+
+    _enrich_valuation(result, "TW:2330", loader=loader, captured_at="2024-06-28T00:00:00Z")
+    assert result.fields["official_pb"].reason == "official_pb_not_retrieved"
+    assert result.fields["official_dividend_yield"].reason == "official_yield_not_retrieved"
+
+
+def test_provider_budget_delta_is_per_symbol_not_cumulative() -> None:
+    from app.services.tw_research.first_pass import (
+        bounded_provider_diagnostics,
+        provider_budget_delta,
+    )
+
+    before = {"twse_pe": {"requests": 0, "rate_limited": 0, "timeouts": 0}}
+    after_sym1 = {"twse_pe": {"requests": 1, "rate_limited": 1, "timeouts": 0}}
+    after_sym2 = {"twse_pe": {"requests": 1, "rate_limited": 1, "timeouts": 0}}
+
+    d1 = provider_budget_delta(before, after_sym1)
+    d2 = provider_budget_delta(after_sym1, after_sym2)
+    assert d1["twse_pe"]["rate_limited"] == 1
+    assert d2 == {}  # sticky totals must not appear as a second-symbol delta
+
+    sticky = SimpleNamespace(
+        classification="rate_limited", status_code=429, retry_after_seconds=30
+    )
+    diag1 = bounded_provider_diagnostics(
+        before=before, after=after_sym1, last_http=sticky
+    )
+    diag2 = bounded_provider_diagnostics(
+        before=after_sym1, after=after_sym2, last_http=None
+    )
+    assert diag1["lastHttp"]["statusCode"] == 429
+    assert "lastHttp" not in diag2
+    assert len(str(diag1)) < 4000
+
+
+def test_recovery_sql_casts_json_column_not_bare_jsonb_concat() -> None:
+    """payload_json is json (migration 0024); bare || jsonb fails — cast pattern required."""
+    from tests.repo_root import repo_root
+
+    doc = (
+        repo_root() / "docs" / "tw-research-first-pass-post-d1-data-quality-362.md"
+    ).read_text(encoding="utf-8")
+    assert "payload_json::jsonb || jsonb_build_object(" in doc
+    assert ")::json" in doc
+    assert "official_pe_unavailable" in doc
+    assert "BEGIN;" in doc
+    # Must not recommend bare json || jsonb without cast.
+    assert "SET payload_json = payload_json\n     || jsonb_build_object" not in doc
 
 
 def test_reconcile_persists_when_only_first_pass_progress_counts_change() -> None:

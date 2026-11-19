@@ -809,8 +809,9 @@ class ResearchRunStore:
         *,
         last_tick_at: str,
         last_outcome: str,
+        provider_batch_summary: dict[str, Any] | None = None,
     ) -> ResearchRun | None:
-        """Best-effort tick telemetry on the research run (#349)."""
+        """Best-effort tick telemetry on the research run (#349/#362)."""
         with self._lock:
             run = self._load_locked(user_id)
             if run is None:
@@ -818,6 +819,9 @@ class ResearchRunStore:
             meta = dict(run.dimensions.get("firstPassDrain") or {})
             meta["lastTickAt"] = last_tick_at
             meta["lastOutcome"] = last_outcome
+            if isinstance(provider_batch_summary, dict):
+                # One bounded batch summary on the run (not duplicated per symbol).
+                meta["providerBatchSummary"] = dict(provider_batch_summary)
             run.dimensions["firstPassDrain"] = meta
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)

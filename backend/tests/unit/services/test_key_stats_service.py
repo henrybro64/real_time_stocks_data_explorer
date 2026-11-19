@@ -852,11 +852,16 @@ def test_pe_snapshot_does_not_cache_transient_timeout(monkeypatch: pytest.Monkey
     day = date(2024, 6, 28)
     with pytest.raises(key_stats_service._PeFetchTransient):
         key_stats_service._fetch_twse_daily_pe_snapshot(day)
+    # Short negative cache: same (board, day) does not re-hit the network.
+    with pytest.raises(key_stats_service._PeFetchTransient):
+        key_stats_service._fetch_twse_daily_pe_snapshot(day)
+    assert calls["n"] == 1
+    key_stats_service.clear_official_pe_snapshot_cache()
     second = key_stats_service._fetch_twse_daily_pe_snapshot(day)
     assert second is not None
     assert "2330" in second[0]
     assert calls["n"] == 2
-    # Third call hits the success cache.
+    # Success cache still works after a real fetch.
     assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is not None
     assert calls["n"] == 2
     key_stats_service.clear_official_pe_snapshot_cache()
@@ -1030,6 +1035,103 @@ def test_pe_snapshot_deadline_exceeded_not_cached(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(CollectorDeadlineExceeded):
         key_stats_service._fetch_twse_daily_pe_snapshot(day)
     assert calls["n"] == 2
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_rate_limited_pe_stops_weekday_loop_and_neg_caches_board_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """5 symbols under mocked 429 → at most 1 request per (board, day)."""
+    from collections import Counter
+    from datetime import date
+
+    from app.services import key_stats_service
+    from app.services.http_client import HttpFetchError
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    day_counts: Counter[str] = Counter()
+
+    def fake_fetch(url, **_kwargs):
+        # resource day is embedded in the TWSE query string as YYYYMMDD.
+        marker = "date="
+        idx = url.find(marker)
+        day_key = url[idx + len(marker) : idx + len(marker) + 8] if idx >= 0 else url
+        day_counts[day_key] += 1
+        raise key_stats_service._PeFetchTransient(
+            "rate_limited:HTTP429"
+        ) from HttpFetchError(
+            "HTTP 429",
+            status_code=429,
+            classification="rate_limited",
+            retry_after_seconds=30,
+        )
+
+    monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
+
+    quote = quote_record(
+        "TW:2330",
+        last_price=100.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=100.0,
+        timestamp="2024-06-28T13:30:00+08:00",
+        is_market_open=False,
+    )
+    symbols = ["2330", "2317", "2454", "2303", "2881"]
+    for sym in symbols:
+        stock = stock_record(
+            f"TW:{sym}",
+            market="TW",
+            symbol=sym,
+            name=sym,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+        out, handled = key_stats_service._apply_tw_official_valuation({}, stock, quote)
+        assert handled is True
+        warning = str(out.get("valuationWarning") or "")
+        assert "rate_limited" in warning or "429" in warning or "negative_cache" in warning
+
+    assert day_counts, "expected at least one upstream attempt"
+    assert max(day_counts.values()) == 1
+    # 429 breaks the weekday loop on the first real miss, so only one day is hit.
+    assert len(day_counts) == 1
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_all_weekdays_no_data_uses_no_recent_snapshot_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=100.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=100.0,
+        timestamp="2024-06-28T13:30:00+08:00",
+        is_market_open=False,
+    )
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_twse_daily_pe_snapshot",
+        lambda _day: None,
+    )
+    out, handled = key_stats_service._apply_tw_official_valuation({}, stock, quote)
+    assert handled is True
+    assert out.get("valuationWarning") == "official_pe_no_recent_snapshot"
     key_stats_service.clear_official_pe_snapshot_cache()
 
 

@@ -88,7 +88,10 @@ _PERMANENT_FIELD_REASON_MARKERS = (
     "deferred_to_separate",
     "verified_eps_growth",
     "official_pb_not_present",
+    "official_pb_not_retrieved",
     "official_yield_not_present",
+    "official_yield_not_retrieved",
+    "official_pe_no_recent_snapshot",
     "same_definition_historical",
     "cash_flow_adapter",
     "balance_sheet_adapter",
@@ -223,6 +226,63 @@ class FirstPassBatchResult:
             "durationMs": self.duration_ms,
             "leaseLost": self.lease_lost,
         }
+
+
+_PROVIDER_DIAG_KEYS = (
+    "requests",
+    "timeouts",
+    "retries",
+    "rate_limited",
+    "cache_hits",
+    "cache_misses",
+    "bytes",
+)
+
+
+def provider_budget_delta(
+    before: Mapping[str, Mapping[str, float | int]] | None,
+    after: Mapping[str, Mapping[str, float | int]] | None,
+    *,
+    max_providers: int = 8,
+) -> dict[str, dict[str, int]]:
+    """Non-negative per-provider counter deltas; capped provider count."""
+    before_map = dict(before or {})
+    after_map = dict(after or {})
+    names = sorted(set(before_map) | set(after_map))
+    providers: dict[str, dict[str, int]] = {}
+    for index, name in enumerate(names):
+        if index >= max_providers:
+            break
+        prev = dict(before_map.get(name) or {})
+        nxt = dict(after_map.get(name) or {})
+        delta = {
+            key: max(0, int(nxt.get(key) or 0) - int(prev.get(key) or 0))
+            for key in _PROVIDER_DIAG_KEYS
+        }
+        if any(delta.values()):
+            providers[str(name)[:64]] = delta
+    return providers
+
+
+def bounded_provider_diagnostics(
+    *,
+    before: Mapping[str, Mapping[str, float | int]] | None = None,
+    after: Mapping[str, Mapping[str, float | int]] | None = None,
+    last_http: Any | None = None,
+) -> dict[str, Any]:
+    """Sanitized per-symbol provider deltas (not batch-cumulative totals)."""
+    diagnostics: dict[str, Any] = {
+        "providers": provider_budget_delta(before, after),
+        "capturedAt": datetime.now(UTC).isoformat(),
+    }
+    if last_http is not None:
+        diagnostics["lastHttp"] = {
+            "classification": getattr(last_http, "classification", None),
+            "statusCode": getattr(last_http, "status_code", None),
+            "retryAfterSeconds": getattr(last_http, "retry_after_seconds", None)
+            or getattr(last_http, "retry_after", None),
+        }
+    return diagnostics
 
 
 def provider_exception_reason(exc: BaseException) -> str:
@@ -505,6 +565,15 @@ def collect_first_pass_batch(
                 budget_stopped = True
                 released_unstarted = list(deduped[index:])
                 break
+        from app.services.http_client import (
+            clear_last_http_fetch_error,
+            get_last_http_fetch_error,
+            snapshot_provider_request_budget,
+        )
+
+        # Per-symbol diagnostics: clear sticky last error and measure deltas.
+        clear_last_http_fetch_error()
+        budget_before = snapshot_provider_request_budget()
         try:
             records.append(
                 _collect_one(
@@ -551,6 +620,16 @@ def collect_first_pass_batch(
             )
             failed.completeness = _symbol_completeness(failed)
             records.append(failed)
+        if records:
+            setattr(
+                records[-1],
+                "_provider_diagnostics",
+                bounded_provider_diagnostics(
+                    before=budget_before,
+                    after=snapshot_provider_request_budget(),
+                    last_http=get_last_http_fetch_error(),
+                ),
+            )
         # Renew/check **before** incremental persist so a lost lease never writes.
         renew_failed = lease_renew is not None and not lease_renew()
         if renew_failed or (lease_lost_check is not None and lease_lost_check()):

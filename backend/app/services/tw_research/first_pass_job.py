@@ -23,12 +23,14 @@ from app.services.tw_research.first_pass import (
     DEFAULT_SYMBOL_DEADLINE_SECONDS,
     FirstPassBatchResult,
     FirstPassSymbolRecord,
+    bounded_provider_diagnostics,
     classify_field_reason,
     collect_first_pass_batch,
     dedupe_stock_ids,
     dominant_transient_field_error,
     field_reason_is_retryable,
     is_infrastructure_failure,
+    provider_budget_delta,
     retry_after_seconds_from_reason,
 )
 from app.services.tw_research.first_pass_durable import FirstPassDurableUnavailable
@@ -173,47 +175,12 @@ def _merge_preserved_ok_fields(
     return merged
 
 
-def _bounded_provider_diagnostics() -> dict[str, Any]:
-    """Sanitized, size-capped provider counters + last HTTP class for DB payload."""
-    from app.services.http_client import (
-        get_last_http_fetch_error,
-        snapshot_provider_request_budget,
-    )
-
-    budget = snapshot_provider_request_budget()
-    providers: dict[str, dict[str, float | int]] = {}
-    for index, (name, stats) in enumerate(sorted(budget.items())):
-        if index >= 8:
-            break
-        providers[str(name)[:64]] = {
-            "requests": int(stats.get("requests") or 0),
-            "timeouts": int(stats.get("timeouts") or 0),
-            "retries": int(stats.get("retries") or 0),
-            "rate_limited": int(stats.get("rate_limited") or 0),
-            "cache_hits": int(stats.get("cache_hits") or 0),
-            "cache_misses": int(stats.get("cache_misses") or 0),
-            "bytes": int(stats.get("bytes") or 0),
-        }
-    diagnostics: dict[str, Any] = {
-        "providers": providers,
-        "capturedAt": datetime.now(UTC).isoformat(),
-    }
-    last = get_last_http_fetch_error()
-    if last is not None:
-        diagnostics["lastHttp"] = {
-            "classification": getattr(last, "classification", None),
-            "statusCode": getattr(last, "status_code", None),
-            "retryAfterSeconds": getattr(last, "retry_after_seconds", None)
-            or getattr(last, "retry_after", None),
-        }
-    return diagnostics
-
-
 def _enrich_symbol_payload(
     record: FirstPassSymbolRecord,
     *,
     status: str,
     previous_payload: dict[str, Any] | None,
+    provider_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attach durable retry metadata without fabricating financial fields."""
     payload = record.as_dict()
@@ -227,6 +194,22 @@ def _enrich_symbol_payload(
     if status == "failed" and not payload.get("error"):
         payload["error"] = transient or record.error or "transient_field_failure"
     prior_attempts = int(prior.get("attemptCount") or 0)
+    was_revalidate = prior.get("revalidatePartial") is True
+    prior_revalidation_attempts = int(prior.get("revalidationAttempts") or 0)
+    if was_revalidate:
+        payload["revalidationAttempts"] = prior_revalidation_attempts + 1
+        payload["revalidatedAt"] = datetime.now(UTC).isoformat()
+        payload["revalidationOutcome"] = (
+            status if status in {"ok", "partial", "failed"} else "failed"
+        )
+    elif "revalidationAttempts" in prior:
+        payload["revalidationAttempts"] = prior_revalidation_attempts
+        if prior.get("revalidatedAt") is not None:
+            payload["revalidatedAt"] = prior.get("revalidatedAt")
+        if prior.get("revalidationOutcome") is not None:
+            payload["revalidationOutcome"] = prior.get("revalidationOutcome")
+    # One-shot: never persist revalidatePartial after a reclaim collect.
+    payload.pop("revalidatePartial", None)
     if status == "failed":
         attempts = prior_attempts + 1
         failure_class = _classify_symbol_failure(
@@ -260,8 +243,6 @@ def _enrich_symbol_payload(
             for key, value in payload["fields"].items()
             if isinstance(value, dict) and value.get("status") == "ok"
         )
-        # Operator recovery flag is consumed once a failed retry is scheduled.
-        payload.pop("revalidatePartial", None)
     else:
         payload["attemptCount"] = max(prior_attempts, 1)
         prog_key = _programming_error_field_key(record)
@@ -272,13 +253,12 @@ def _enrich_symbol_payload(
         payload["retryExhausted"] = False
         payload["nextRetryAt"] = None
         payload.pop("preservedOkFields", None)
-        if prior.get("revalidatePartial") is True and status == "partial":
-            # Keep flag only if still partial after re-collect (operator may clear).
-            payload["revalidatePartial"] = True
-        else:
-            payload.pop("revalidatePartial", None)
-    # Bounded provider diagnostics (no URLs/tokens) for production investigation.
-    payload["providerDiagnostics"] = _bounded_provider_diagnostics()
+    # Per-symbol deltas only (batch summary lives on firstPassDrain).
+    payload["providerDiagnostics"] = dict(
+        provider_diagnostics
+        if isinstance(provider_diagnostics, dict)
+        else bounded_provider_diagnostics()
+    )
     return payload
 
 
@@ -722,6 +702,7 @@ class FirstPassJobService:
                 record,
                 status=status,
                 previous_payload=previous_payload,
+                provider_diagnostics=getattr(record, "_provider_diagnostics", None),
             )
             # After merging preserved OK fields, a formerly-failed symbol may no
             # longer have retryable field faults — reclassify before persist.
@@ -784,6 +765,7 @@ class FirstPassJobService:
             lease_lost_event.set()
             return False
 
+        provider_batch_summary: dict[str, Any] | None = None
         try:
             from app.services.http_client import (
                 reset_provider_request_budget,
@@ -791,6 +773,8 @@ class FirstPassJobService:
             )
 
             reset_provider_request_budget()
+            batch_budget_started = datetime.now(UTC).isoformat()
+            budget_before_batch = snapshot_provider_request_budget()
             result = collect_first_pass_batch(
                 batch_ids,
                 universe_version=job["universe_version"],
@@ -805,13 +789,26 @@ class FirstPassJobService:
                 on_symbol_collected=_persist_symbol_now,
                 **kwargs,
             )
+            budget_after_batch = snapshot_provider_request_budget()
+            provider_batch_summary = {
+                "startedAt": batch_budget_started,
+                "finishedAt": datetime.now(UTC).isoformat(),
+                "outcome": (
+                    "lease_lost"
+                    if (result.lease_lost or lease_lost_event.is_set())
+                    else ("budget_stopped" if result.budget_stopped else "ok")
+                ),
+                "providers": provider_budget_delta(
+                    budget_before_batch, budget_after_batch
+                ),
+            }
             logger.info(
                 "First-pass batch provider budget",
                 extra={
                     "event": "tw_research.first_pass.provider_budget",
                     "job_id": job_id,
                     "batch_size": len(batch_ids),
-                    "providers": snapshot_provider_request_budget(),
+                    "providers": provider_batch_summary["providers"],
                 },
             )
         except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
@@ -847,6 +844,7 @@ class FirstPassJobService:
                 "leaseLost": True,
                 "jobFailed": False,
                 "lastError": None,
+                "providerBatchSummary": provider_batch_summary,
             }
 
         # Fallback persist for collectors / test doubles that return records
@@ -898,6 +896,7 @@ class FirstPassJobService:
                 "leaseLost": True,
                 "jobFailed": False,
                 "lastError": None,
+                "providerBatchSummary": provider_batch_summary,
             }
         job_out = completed["job"]
 
@@ -918,6 +917,7 @@ class FirstPassJobService:
                 "jobFailed": job_out.get("status") == "failed",
                 "lastError": systemic_error,
                 "leaseLost": False,
+                "providerBatchSummary": provider_batch_summary,
             }
 
         # Finalize only when every symbol is terminal (ok/partial/exhausted), not
@@ -940,6 +940,7 @@ class FirstPassJobService:
             "leaseLost": False,
             "jobFailed": False,
             "lastError": None,
+            "providerBatchSummary": provider_batch_summary,
         }
 
     def list_symbols(

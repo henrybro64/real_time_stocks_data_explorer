@@ -443,6 +443,21 @@ def _enrich_ownership(
     )
 
 
+def _valuation_warning_is_transient(reason: str | None) -> bool:
+    """True for retryable PE warnings (avoid importing first_pass — cycle)."""
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return (
+        text.startswith("rate_limited")
+        or "429" in text
+        or text.startswith("transient_")
+        or "timeout" in text
+        or text.startswith("provider_validation")
+        or text.startswith("negative_cache:")
+    )
+
+
 def _enrich_valuation(
     result: EnrichmentResult,
     stock_id: str,
@@ -459,6 +474,7 @@ def _enrich_valuation(
 
     pe_source_label = str(pe_source or "key_stats_service")
     pe_as_of = str(valuation_as_of) if valuation_as_of else None
+    pe_reason: str | None = None
     if pe is None:
         # Prefer explicit valuationWarning (transient_* / rate_limited / blank PE).
         # Bare official_pe_unavailable is reserved for unknown/authoritative gaps
@@ -484,6 +500,10 @@ def _enrich_valuation(
             value={"peRatio": pe, "peRatioType": pe_type},
         )
 
+    # When official PE failed transiently, PB/yield were never retrieved either —
+    # do not claim they were "not present" in a snapshot we never got (#362).
+    pe_transient = pe is None and _valuation_warning_is_transient(pe_reason)
+
     pb = stats.get("pbRatio")
     if pb is None:
         _set_field(
@@ -493,7 +513,11 @@ def _enrich_valuation(
             source=str(stats.get("pbRatioSource") or "key_stats_service"),
             source_as_of=pe_as_of,
             captured_at=captured_at,
-            reason="official_pb_not_present_in_valuation_snapshot",
+            reason=(
+                "official_pb_not_retrieved"
+                if pe_transient
+                else "official_pb_not_present_in_valuation_snapshot"
+            ),
         )
     else:
         _set_field(
@@ -509,6 +533,12 @@ def _enrich_valuation(
     div_yield = stats.get("dividendYieldPercent")
     yield_type = stats.get("dividendYieldType")
     if div_yield is None or yield_type != "official_daily":
+        if pe_transient and div_yield is None:
+            yield_reason = "official_yield_not_retrieved"
+        elif div_yield is None:
+            yield_reason = "official_yield_not_present_in_valuation_snapshot"
+        else:
+            yield_reason = "nonofficial_yield_not_used_as_taiwan_official"
         _set_field(
             result,
             field="official_dividend_yield",
@@ -516,11 +546,7 @@ def _enrich_valuation(
             source=str(stats.get("dividendYieldSource") or "key_stats_service"),
             source_as_of=pe_as_of,
             captured_at=captured_at,
-            reason=(
-                "official_yield_not_present_in_valuation_snapshot"
-                if div_yield is None
-                else "nonofficial_yield_not_used_as_taiwan_official"
-            ),
+            reason=yield_reason,
         )
     else:
         _set_field(
