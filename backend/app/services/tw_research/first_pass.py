@@ -71,6 +71,7 @@ ProfitabilityLoader = Callable[[str], dict[str, object] | None]
 ThemeKeysLoader = Callable[[str], list[str]]
 
 COLLECTOR_DEADLINE_EXCEEDED_REASON = "collector_deadline_exceeded"
+_PRICE_BASIS_SOURCE = "tw_research.price_basis"
 # Soft per-symbol wall-clock limit for the slow ownership (TDCC) step (#360).
 # Hierarchy: symbol (45s) < batch budget (60s) < curl (150s) < k8s Job (180s)
 # < lease (300s). A Python soft deadline cannot interrupt blocked I/O; keep the
@@ -497,7 +498,7 @@ def _provenance_from_mapping(field_name: str, raw: Mapping[str, Any]) -> Provena
     )
 
 
-def _collect_symbol_with_diagnostics(
+def _collect_symbol_with_diagnostics(  # NOSONAR(S107) mirrors _collect_one loader fan-in
     stock_id: str,
     *,
     stock_loader: StockLoader,
@@ -579,7 +580,7 @@ def _collect_symbol_with_diagnostics(
     return record
 
 
-def collect_first_pass_batch(  # NOSONAR(python:S3776,python:S107) — loader fan-in API; body extracted
+def collect_first_pass_batch(  # NOSONAR(S3776, S107) loader fan-in API; body extracted
     stock_ids: Sequence[str],
     *,
     universe_version: str | None = None,
@@ -743,7 +744,7 @@ def collect_first_pass_for_universe(
     )
 
 
-def _collect_one(
+def _collect_one(  # NOSONAR(S3776, S107) pre-existing collector fan-in; not restructured in #362
     stock_id: str,
     *,
     stock_loader: StockLoader,
@@ -1091,7 +1092,7 @@ def _collect_one(
             scratch.fields["relative_price_basis"] = ProvenanceField(
                 field="relative_price_basis",
                 status="unavailable",
-                source="tw_research.price_basis",
+                source=_PRICE_BASIS_SOURCE,
                 captured_at=captured_at,
                 freshness_class="computed",
                 reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
@@ -1115,7 +1116,7 @@ def _collect_one(
                 scratch.fields["relative_price_basis"] = ProvenanceField(
                     field="relative_price_basis",
                     status="ok" if basis.category != "insufficient_data" else "unavailable",
-                    source="tw_research.price_basis",
+                    source=_PRICE_BASIS_SOURCE,
                     source_as_of=basis.as_of,
                     captured_at=captured_at,
                     freshness_class="computed",
@@ -1123,14 +1124,15 @@ def _collect_one(
                     # Store the full evidence object so retries can reuse it verbatim.
                     value=basis.as_dict(),
                 )
-            except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
+            except Exception as exc:  # noqa: BLE001
+                # Isolate price-basis calculation faults from the symbol collector.
                 if is_infrastructure_failure(exc):
                     raise
                 reason = provider_exception_reason(exc)
                 log_isolated_fault(
                     stock_id=stock.id,
                     stage="relative_price_basis",
-                    source="tw_research.price_basis",
+                    source=_PRICE_BASIS_SOURCE,
                     exc=exc,
                     reason=reason,
                     job_id=job_id,
@@ -1138,7 +1140,7 @@ def _collect_one(
                 scratch.fields["relative_price_basis"] = ProvenanceField(
                     field="relative_price_basis",
                     status="unavailable",
-                    source="tw_research.price_basis",
+                    source=_PRICE_BASIS_SOURCE,
                     captured_at=captured_at,
                     freshness_class="computed",
                     reason=reason,

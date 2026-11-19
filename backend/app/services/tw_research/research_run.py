@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 # Same eligibility set as standalone adoption (#359 / repository).
 _REARM_ELIGIBLE_JOB_STATUS = frozenset({"pending", "running", "deferred", "partial"})
 _ISO_Z_UTC_SUFFIX = "+00:00"
+_FIRST_PASS_DRAIN_AUTHORIZED_NOTE = (
+    "First-pass drain authorized for this research-run job only."
+)
+_SYSTEMIC_PROGRAMMING_ERROR_PREFIX = "systemic_programming_error:"
 
 
 def _parse_iso_utc(value: str) -> datetime:
@@ -451,7 +455,7 @@ class ResearchRunStore:
                 run.append_note(note)
             if available:
                 run.append_note(
-                    "First-pass drain authorized for this research-run job only."
+                    _FIRST_PASS_DRAIN_AUTHORIZED_NOTE
                 )
             else:
                 run.append_note(str(reason))
@@ -621,7 +625,7 @@ class ResearchRunStore:
                     f"Adopted standalone first-pass job {job_id}.",
                     "Preserved existing per-symbol evidence; remaining symbols stay pending.",
                     (
-                        "First-pass drain authorized for this research-run job only."
+                        _FIRST_PASS_DRAIN_AUTHORIZED_NOTE
                         if available
                         else str(reason)
                     ),
@@ -1154,7 +1158,7 @@ class ResearchRunStore:
                     run.append_note(note)
                 if available:
                     run.append_note(
-                        "First-pass drain authorized for this research-run job only."
+                        _FIRST_PASS_DRAIN_AUTHORIZED_NOTE
                     )
                 else:
                     run.append_note(str(reason))
@@ -1482,7 +1486,7 @@ class ResearchRunStore:
             if last_error and last_error != prior_last_error:
                 run.append_note(f"lastError:{last_error}")
             # Systemic programming_error disarms drain.
-            if last_error and str(last_error).startswith("systemic_programming_error:"):
+            if last_error and str(last_error).startswith(_SYSTEMIC_PROGRAMMING_ERROR_PREFIX):
                 run.schedule_enabled = False
                 if "first_pass_drain_disarmed_systemic_programming_error" not in run.notes:
                     run.append_note("first_pass_drain_disarmed_systemic_programming_error")
@@ -1690,7 +1694,8 @@ class ResearchRunStore:
             return None
         try:
             counts = counter(job_id)
-        except Exception:  # noqa: BLE001 — progress is best-effort, never fail reconcile
+        except Exception:  # noqa: BLE001
+            # Progress is best-effort; never fail reconcile on count errors.
             return None
         if not isinstance(counts, Mapping) or "total" not in counts:
             return None
@@ -1729,13 +1734,13 @@ def _job_error_fields(job: dict[str, Any]) -> tuple[str | None, str | None, str 
             if text.startswith("error:"):
                 last_error = text[len("error:") :]
                 break
-            if text.startswith("systemic_programming_error:"):
+            if text.startswith(_SYSTEMIC_PROGRAMMING_ERROR_PREFIX):
                 last_error = text
                 break
     last_error_class = job.get("last_error_class") or job.get("lastErrorClass")
     next_retry_at = job.get("next_retry_at") or job.get("nextRetryAt")
     if not last_error_class and last_error:
-        if str(last_error).startswith("systemic_programming_error:"):
+        if str(last_error).startswith(_SYSTEMIC_PROGRAMMING_ERROR_PREFIX):
             last_error_class = "programming_error"
         else:
             last_error_class = str(last_error).split(":", 1)[0]

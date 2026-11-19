@@ -1107,7 +1107,7 @@ def _apply_batch_result(
     return job, flags
 
 
-def _run_drain_batches(  # NOSONAR(python:S3776) — batch loop control flow; #362 wires provider summary
+def _run_drain_batches(  # NOSONAR(S3776) batch loop control flow; #362 wires provider summary
     *,
     owner: str,
     run: ResearchRun,

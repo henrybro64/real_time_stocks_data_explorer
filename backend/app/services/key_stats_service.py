@@ -11,7 +11,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -341,7 +341,8 @@ def _http_get_json_url(url: str) -> dict | None:
             return data if isinstance(data, dict) else None
     except CollectorDeadlineExceeded:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError):
+    except (URLError, TimeoutError, ValueError):
+        # HTTPError is a URLError subclass — catching both is redundant (Sonar).
         record_provider_budget_event("finnhub", timeouts=1)
         return None
 
@@ -371,7 +372,8 @@ def _http_get_any(url: str) -> object | None:
             return data
     except CollectorDeadlineExceeded:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError):
+    except (URLError, TimeoutError, ValueError):
+        # HTTPError is a URLError subclass — catching both is redundant (Sonar).
         record_provider_budget_event("finnhub", timeouts=1)
         return None
 

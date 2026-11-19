@@ -588,7 +588,7 @@ class FirstPassJobService:
             ],
         }
 
-    def run_batch(  # NOSONAR(python:S3776) — pre-existing lease/persist branches; #362 adds summary only
+    def run_batch(  # NOSONAR(S3776) pre-existing lease/persist branches; #362 adds summary only
         self,
         job_id: str,
         *,
