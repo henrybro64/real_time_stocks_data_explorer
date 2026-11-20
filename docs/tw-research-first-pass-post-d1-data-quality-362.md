@@ -41,7 +41,15 @@ executor notes (`docs/tw-research-first-pass-executor-362-366.md`).
   warning including `peStatus=…` → symbol **`partial`**, no auto-retry.
 - **All recent weekdays no-data** (no transient): reason `official_pe_no_recent_snapshot`
   (non-retryable). No-data cache entries expire after ~30 minutes so the latest weekday
-  can be rechecked.
+  can be rechecked. Only provider `stat` messages that contain `查無資料`,
+  `沒有符合條件`, or `"no data"` (case-insensitive) count as definitive no-data for
+  that cache; missing/empty/unknown `stat` values are retryable validation failures
+  (see table below), not sticky 30-minute no-data.
+- **Official snapshot without the stock** (file(s) loaded, stock absent, no prior
+  weekday transient): reason `official_pe_symbol_not_in_snapshot` (non-retryable
+  partial). If an earlier weekday hit a retryable transient before a later miss,
+  the transient warning wins so enrichment does not collapse to bare
+  `official_pe_unavailable`.
 - **429 / rate limit:** weekday lookback stops immediately; a short process-local negative
   cache (≈90s) per `(board, day)` prevents batch mates from re-requesting the same day.
   A cache hit reuses the original durable reason with a `:negative_cache` suffix
@@ -57,6 +65,15 @@ executor notes (`docs/tw-research-first-pass-executor-362-366.md`).
   `revalidationAttempts >= 1`.
 - **Duplicates / leases:** unchanged unique `(job_id, stock_id)` upsert + lease
   generation fencing; reclaim never invents market data.
+
+### Reason / semantics (063395d)
+
+| Reason | Meaning | Retry / cache |
+|--------|---------|---------------|
+| `official_pe_symbol_not_in_snapshot` | Official PE file(s) loaded for a weekday, but the stock was absent from the snapshot (and no earlier weekday transient). | Permanent, non-retryable **partial**. |
+| `provider_validation:TWSE_PE_stat_unexpected` / `provider_validation:TPEx_PE_stat_unexpected` | Missing, empty, or unknown PE `stat` (anything that is not OK and not a known no-data message). Raw `stat` text is not embedded in the reason. | Retryable; ≈90 s negative cache. |
+| `provider_validation:TWSE_PE_empty_data` / `provider_validation:TPEx_PE_empty_data` | `stat` OK but the data table is empty (TWSE `data` / TPEx first-table data). | Retryable; ≈90 s negative cache. |
+| Definitive no-data (`None` from parsers) | `stat` contains `查無資料`, `沒有符合條件`, or `"no data"` (case-insensitive). | Authoritative gap path → ~30 min no-data cache; lookback may end as `official_pe_no_recent_snapshot` when every weekday is definitive no-data and there was no transient. |
 
 ## Safe post-merge recovery for existing 13 rows (operator)
 

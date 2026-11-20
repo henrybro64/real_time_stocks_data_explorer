@@ -856,18 +856,29 @@ def _pe_stat_is_definitive_no_data(stat: object) -> bool:
     return any(marker in text for marker in _PE_NO_DATA_STAT_MARKERS)
 
 
+def _require_pe_stat_ok(stat: object, *, board: str) -> None:
+    """Raise ``_PeFetchTransient`` unless ``stat`` is board-OK.
+
+    Callers must handle definitive no-data markers before calling this.
+    """
+    normalized = str(stat or "").strip()
+    if board == "TWSE":
+        if normalized.upper() == "OK":
+            return
+    elif normalized.lower() == "ok":
+        return
+    raise _PeFetchTransient(f"provider_validation:{board}_PE_stat_unexpected")
+
+
 def _parse_twse_pe_payload(
     payload: object,
 ) -> tuple[dict[str, dict[str, object]], str | None] | None:
     if not isinstance(payload, dict):
         raise _PeFetchTransient("provider_validation:TWSE_PE_payload_not_object")
     stat = payload.get("stat")
-    if str(stat or "").strip().upper() == "OK":
-        pass
-    elif _pe_stat_is_definitive_no_data(stat):
+    if _pe_stat_is_definitive_no_data(stat):
         return None
-    else:
-        raise _PeFetchTransient("provider_validation:TWSE_PE_stat_unexpected")
+    _require_pe_stat_ok(stat, board="TWSE")
     fields = payload.get("fields")
     rows = payload.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
@@ -903,12 +914,9 @@ def _parse_tpex_pe_payload(
     if not isinstance(payload, dict):
         raise _PeFetchTransient("provider_validation:TPEx_PE_payload_not_object")
     stat = payload.get("stat")
-    if str(stat or "").strip().lower() == "ok":
-        pass
-    elif _pe_stat_is_definitive_no_data(stat):
+    if _pe_stat_is_definitive_no_data(stat):
         return None
-    else:
-        raise _PeFetchTransient("provider_validation:TPEx_PE_stat_unexpected")
+    _require_pe_stat_ok(stat, board="TPEx")
     tables = payload.get("tables")
     if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
         raise _PeFetchTransient("provider_validation:TPEx_PE_tables_invalid")
