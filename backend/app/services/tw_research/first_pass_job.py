@@ -23,12 +23,14 @@ from app.services.tw_research.first_pass import (
     DEFAULT_SYMBOL_DEADLINE_SECONDS,
     FirstPassBatchResult,
     FirstPassSymbolRecord,
+    bounded_provider_diagnostics,
     classify_field_reason,
     collect_first_pass_batch,
     dedupe_stock_ids,
     dominant_transient_field_error,
     field_reason_is_retryable,
     is_infrastructure_failure,
+    provider_budget_delta,
     retry_after_seconds_from_reason,
 )
 from app.services.tw_research.first_pass_durable import FirstPassDurableUnavailable
@@ -173,11 +175,92 @@ def _merge_preserved_ok_fields(
     return merged
 
 
+def _apply_revalidation_audit(
+    payload: dict[str, Any],
+    prior: dict[str, Any],
+    *,
+    status: str,
+) -> None:
+    """One-shot revalidatePartial: record attempts/outcome and always clear the flag."""
+    was_revalidate = prior.get("revalidatePartial") is True
+    prior_revalidation_attempts = int(prior.get("revalidationAttempts") or 0)
+    if was_revalidate:
+        payload["revalidationAttempts"] = prior_revalidation_attempts + 1
+        payload["revalidatedAt"] = datetime.now(UTC).isoformat()
+        payload["revalidationOutcome"] = (
+            status if status in {"ok", "partial", "failed"} else "failed"
+        )
+    elif "revalidationAttempts" in prior:
+        payload["revalidationAttempts"] = prior_revalidation_attempts
+        if prior.get("revalidatedAt") is not None:
+            payload["revalidatedAt"] = prior.get("revalidatedAt")
+        if prior.get("revalidationOutcome") is not None:
+            payload["revalidationOutcome"] = prior.get("revalidationOutcome")
+    payload.pop("revalidatePartial", None)
+
+
+def _apply_failed_retry_metadata(
+    payload: dict[str, Any],
+    record: FirstPassSymbolRecord,
+    *,
+    prior_attempts: int,
+    transient: str | None,
+) -> None:
+    from datetime import timedelta
+
+    attempts = prior_attempts + 1
+    failure_class = _classify_symbol_failure(
+        str(payload.get("error") or record.error or transient or "")
+    )
+    delay = min(
+        _FIRST_PASS_RETRY_CAP_SECONDS,
+        _FIRST_PASS_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+    )
+    hinted = retry_after_seconds_from_reason(str(payload.get("error") or ""))
+    if hinted is not None:
+        delay = max(delay, hinted)
+    jitter = int(hashlib.sha256(record.stock_id.encode("utf-8")).hexdigest()[:4], 16) % 11
+    exhausted = (
+        attempts >= _FIRST_PASS_MAX_ATTEMPTS
+        or failure_class == "permanent"
+        or failure_class == "programming_error"
+    )
+    payload["attemptCount"] = attempts
+    payload["failureClass"] = failure_class
+    payload["retryExhausted"] = exhausted
+    payload["nextRetryAt"] = None if exhausted else (
+        datetime.now(UTC) + timedelta(seconds=delay + jitter)
+    ).isoformat()
+    payload["preservedOkFields"] = sorted(
+        key
+        for key, value in payload["fields"].items()
+        if isinstance(value, dict) and value.get("status") == "ok"
+    )
+
+
+def _apply_nonfailed_retry_metadata(
+    payload: dict[str, Any],
+    record: FirstPassSymbolRecord,
+    *,
+    status: str,
+    prior_attempts: int,
+) -> None:
+    payload["attemptCount"] = max(prior_attempts, 1)
+    prog_key = _programming_error_field_key(record)
+    payload["failureClass"] = (
+        "programming_error" if status == "partial" and prog_key is not None else None
+    )
+    payload["retryExhausted"] = False
+    payload["nextRetryAt"] = None
+    payload.pop("preservedOkFields", None)
+
+
 def _enrich_symbol_payload(
     record: FirstPassSymbolRecord,
     *,
     status: str,
     previous_payload: dict[str, Any] | None,
+    provider_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attach durable retry metadata without fabricating financial fields."""
     payload = record.as_dict()
@@ -186,54 +269,25 @@ def _enrich_symbol_payload(
         prior.get("fields") if isinstance(prior.get("fields"), dict) else None,
         dict(payload.get("fields") or {}),
     )
-    # Recompute dominant transient after merge (may clear retry need).
     transient = dominant_transient_field_error(payload["fields"])
     if status == "failed" and not payload.get("error"):
         payload["error"] = transient or record.error or "transient_field_failure"
     prior_attempts = int(prior.get("attemptCount") or 0)
+    _apply_revalidation_audit(payload, prior, status=status)
     if status == "failed":
-        attempts = prior_attempts + 1
-        failure_class = _classify_symbol_failure(
-            str(payload.get("error") or record.error or transient or "")
-        )
-        delay = min(
-            _FIRST_PASS_RETRY_CAP_SECONDS,
-            _FIRST_PASS_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
-        )
-        hinted = retry_after_seconds_from_reason(str(payload.get("error") or ""))
-        if hinted is not None:
-            delay = max(delay, hinted)
-        # Deterministic jitter from stock id (stable across workers).
-        jitter = int(hashlib.sha256(record.stock_id.encode("utf-8")).hexdigest()[:4], 16) % 11
-        exhausted = (
-            attempts >= _FIRST_PASS_MAX_ATTEMPTS
-            or failure_class == "permanent"
-            or failure_class == "programming_error"
-        )
-        from datetime import timedelta
-
-        payload["attemptCount"] = attempts
-        payload["failureClass"] = failure_class
-        payload["retryExhausted"] = exhausted
-        # programming_error never schedules next_retry_at.
-        payload["nextRetryAt"] = None if exhausted else (
-            datetime.now(UTC) + timedelta(seconds=delay + jitter)
-        ).isoformat()
-        payload["preservedOkFields"] = sorted(
-            key
-            for key, value in payload["fields"].items()
-            if isinstance(value, dict) and value.get("status") == "ok"
+        _apply_failed_retry_metadata(
+            payload, record, prior_attempts=prior_attempts, transient=transient
         )
     else:
-        payload["attemptCount"] = max(prior_attempts, 1)
-        prog_key = _programming_error_field_key(record)
-        if status == "partial" and prog_key is not None:
-            payload["failureClass"] = "programming_error"
-        else:
-            payload["failureClass"] = None
-        payload["retryExhausted"] = False
-        payload["nextRetryAt"] = None
-        payload.pop("preservedOkFields", None)
+        _apply_nonfailed_retry_metadata(
+            payload, record, status=status, prior_attempts=prior_attempts
+        )
+    # Per-symbol deltas only (batch summary lives on firstPassDrain).
+    payload["providerDiagnostics"] = dict(
+        provider_diagnostics
+        if isinstance(provider_diagnostics, dict)
+        else bounded_provider_diagnostics()
+    )
     return payload
 
 
@@ -534,7 +588,7 @@ class FirstPassJobService:
             ],
         }
 
-    def run_batch(
+    def run_batch(  # NOSONAR(S3776) pre-existing lease/persist branches; #362 adds summary only
         self,
         job_id: str,
         *,
@@ -677,6 +731,7 @@ class FirstPassJobService:
                 record,
                 status=status,
                 previous_payload=previous_payload,
+                provider_diagnostics=getattr(record, "_provider_diagnostics", None),
             )
             # After merging preserved OK fields, a formerly-failed symbol may no
             # longer have retryable field faults — reclassify before persist.
@@ -739,6 +794,7 @@ class FirstPassJobService:
             lease_lost_event.set()
             return False
 
+        provider_batch_summary: dict[str, Any] | None = None
         try:
             from app.services.http_client import (
                 reset_provider_request_budget,
@@ -746,6 +802,8 @@ class FirstPassJobService:
             )
 
             reset_provider_request_budget()
+            batch_budget_started = datetime.now(UTC).isoformat()
+            budget_before_batch = snapshot_provider_request_budget()
             result = collect_first_pass_batch(
                 batch_ids,
                 universe_version=job["universe_version"],
@@ -760,13 +818,28 @@ class FirstPassJobService:
                 on_symbol_collected=_persist_symbol_now,
                 **kwargs,
             )
+            budget_after_batch = snapshot_provider_request_budget()
+            if result.lease_lost or lease_lost_event.is_set():
+                batch_outcome = "lease_lost"
+            elif result.budget_stopped:
+                batch_outcome = "budget_stopped"
+            else:
+                batch_outcome = "ok"
+            provider_batch_summary = {
+                "startedAt": batch_budget_started,
+                "finishedAt": datetime.now(UTC).isoformat(),
+                "outcome": batch_outcome,
+                "providers": provider_budget_delta(
+                    budget_before_batch, budget_after_batch
+                ),
+            }
             logger.info(
                 "First-pass batch provider budget",
                 extra={
                     "event": "tw_research.first_pass.provider_budget",
                     "job_id": job_id,
                     "batch_size": len(batch_ids),
-                    "providers": snapshot_provider_request_budget(),
+                    "providers": provider_batch_summary["providers"],
                 },
             )
         except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
@@ -802,6 +875,7 @@ class FirstPassJobService:
                 "leaseLost": True,
                 "jobFailed": False,
                 "lastError": None,
+                "providerBatchSummary": provider_batch_summary,
             }
 
         # Fallback persist for collectors / test doubles that return records
@@ -853,6 +927,7 @@ class FirstPassJobService:
                 "leaseLost": True,
                 "jobFailed": False,
                 "lastError": None,
+                "providerBatchSummary": provider_batch_summary,
             }
         job_out = completed["job"]
 
@@ -873,6 +948,7 @@ class FirstPassJobService:
                 "jobFailed": job_out.get("status") == "failed",
                 "lastError": systemic_error,
                 "leaseLost": False,
+                "providerBatchSummary": provider_batch_summary,
             }
 
         # Finalize only when every symbol is terminal (ok/partial/exhausted), not
@@ -895,6 +971,7 @@ class FirstPassJobService:
             "leaseLost": False,
             "jobFailed": False,
             "lastError": None,
+            "providerBatchSummary": provider_batch_summary,
         }
 
     def list_symbols(

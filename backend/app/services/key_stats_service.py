@@ -8,9 +8,10 @@ import os
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
+_JSON_ACCEPT = "application/json,text/plain,*/*"
 _TIMEOUT = 15
 _YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
 _FINNHUB_API = "https://finnhub.io/api/v1"
@@ -38,23 +40,34 @@ _YFINANCE_PRELOAD_WORKERS = 8
 _yfinance_info_cache: dict[str, tuple[float, dict[str, object] | None]] = {}
 
 # Official PE day-file cache: success + definitive no-data only (never timeouts).
+# No-data for weekdays carries a short TTL so the most recent session is rechecked.
 _PE_CACHE_MAXSIZE = 32
 _PE_NO_DATA = object()
+_PE_NO_DATA_TTL_SECONDS = 30 * 60
+_PE_TRANSIENT_NEG_TTL_SECONDS = 90  # 60–120s process-local negative cache
+_PE_TRANSIENT_NEG_MAXSIZE = 32
 _pe_snapshot_cache: OrderedDict[
     tuple[str, str],
     tuple[dict[str, dict[str, object]], str | None] | object,
 ] = OrderedDict()
+# Expiry (monotonic) for no-data entries; missing key → treat as expired.
+_pe_no_data_expires: dict[tuple[str, str], float] = {}
+# Separate from success/no-data: short-lived transient failure per (board, day).
+# Value: (expires_monotonic, kind) where kind is "rate_limited" or "transient".
+_pe_transient_neg_cache: OrderedDict[tuple[str, str], tuple[float, str]] = OrderedDict()
 _pe_snapshot_cache_lock = threading.Lock()
 
 
 class _PeFetchTransient(Exception):
-    """Upstream PE day-file fetch failed transiently — do not cache."""
+    """Upstream PE day-file fetch failed transiently — do not cache as success/no-data."""
 
 
 def clear_official_pe_snapshot_cache() -> None:
-    """Reset the TWSE/TPEx PE day-file cache (tests / process recycle)."""
+    """Reset the TWSE/TPEx PE day-file + transient negative caches (tests / recycle)."""
     with _pe_snapshot_cache_lock:
         _pe_snapshot_cache.clear()
+        _pe_no_data_expires.clear()
+        _pe_transient_neg_cache.clear()
 
 
 def _pe_cache_get(
@@ -64,10 +77,16 @@ def _pe_cache_get(
     with _pe_snapshot_cache_lock:
         if key not in _pe_snapshot_cache:
             return False, None
-        _pe_snapshot_cache.move_to_end(key)
         value = _pe_snapshot_cache[key]
         if value is _PE_NO_DATA:
+            expires = _pe_no_data_expires.get(key)
+            if expires is None or time.monotonic() >= expires:
+                _pe_snapshot_cache.pop(key, None)
+                _pe_no_data_expires.pop(key, None)
+                return False, None
+            _pe_snapshot_cache.move_to_end(key)
             return True, None
+        _pe_snapshot_cache.move_to_end(key)
         return True, value  # type: ignore[return-value]
 
 
@@ -75,14 +94,71 @@ def _pe_cache_set(
     board: str,
     target_day: date,
     value: tuple[dict[str, dict[str, object]], str | None] | object,
+    *,
+    no_data_ttl_seconds: float | None = _PE_NO_DATA_TTL_SECONDS,
 ) -> None:
     key = (board, target_day.isoformat())
     with _pe_snapshot_cache_lock:
         if key in _pe_snapshot_cache:
             _pe_snapshot_cache.move_to_end(key)
         _pe_snapshot_cache[key] = value
+        if value is _PE_NO_DATA:
+            ttl = (
+                float(no_data_ttl_seconds)
+                if no_data_ttl_seconds is not None
+                else _PE_NO_DATA_TTL_SECONDS
+            )
+            _pe_no_data_expires[key] = time.monotonic() + max(0.0, ttl)
+        else:
+            _pe_no_data_expires.pop(key, None)
         while len(_pe_snapshot_cache) > _PE_CACHE_MAXSIZE:
-            _pe_snapshot_cache.popitem(last=False)
+            dropped, _ = _pe_snapshot_cache.popitem(last=False)
+            _pe_no_data_expires.pop(dropped, None)
+
+
+_PE_NEG_CACHE_PREFIX = "negative_cache:"
+_PE_NEG_CACHE_REASON_MAX = 160
+
+
+def _pe_transient_neg_get(board: str, target_day: date) -> str | None:
+    """Return the cached machine-readable failure reason if still fresh, else None."""
+    key = (board, target_day.isoformat())
+    with _pe_snapshot_cache_lock:
+        entry = _pe_transient_neg_cache.get(key)
+        if entry is None:
+            return None
+        expires, reason = entry
+        if time.monotonic() >= expires:
+            _pe_transient_neg_cache.pop(key, None)
+            return None
+        _pe_transient_neg_cache.move_to_end(key)
+        return reason
+
+
+def _pe_transient_neg_set(board: str, target_day: date, *, reason: str) -> None:
+    """Remember a transient day-file failure briefly, keeping its original reason.
+
+    The stored value is the durable reason (e.g. ``transient_http:503:HttpFetchError``)
+    so a cache hit for a batch mate stays retryable with the same class — never a
+    bare marker that ``classify_field_reason`` would treat as permanent (#362).
+    """
+    key = (board, target_day.isoformat())
+    label = (str(reason or "").strip() or "transient_network:unknown")[
+        :_PE_NEG_CACHE_REASON_MAX
+    ]
+    with _pe_snapshot_cache_lock:
+        _pe_transient_neg_cache[key] = (
+            time.monotonic() + _PE_TRANSIENT_NEG_TTL_SECONDS,
+            label,
+        )
+        _pe_transient_neg_cache.move_to_end(key)
+        while len(_pe_transient_neg_cache) > _PE_TRANSIENT_NEG_MAXSIZE:
+            _pe_transient_neg_cache.popitem(last=False)
+
+
+def _pe_transient_is_rate_limited(exc: BaseException) -> bool:
+    """True when the classified PE failure is a rate limit (HTTP 429)."""
+    return _pe_transient_warning(exc).startswith("rate_limited")
 
 
 def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
@@ -95,7 +171,7 @@ def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
             url,
             headers={
                 "User-Agent": _BROWSER_USER_AGENT,
-                "Accept": "application/json,text/plain,*/*",
+                "Accept": _JSON_ACCEPT,
             },
             timeout_seconds=_TIMEOUT,
             retries=0,
@@ -104,7 +180,7 @@ def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
             resource_id=symbol,
             retry_rate_limits=False,
         )
-    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (HttpFetchError, TimeoutError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -249,7 +325,7 @@ def _http_get_json_url(url: str) -> dict | None:
 
     request = Request(url)
     request.add_header("User-Agent", _BROWSER_USER_AGENT)
-    request.add_header("Accept", "application/json,text/plain,*/*")
+    request.add_header("Accept", _JSON_ACCEPT)
     try:
         timeout = capped_request_timeout_seconds(float(_TIMEOUT))
         started = time.perf_counter()
@@ -265,7 +341,8 @@ def _http_get_json_url(url: str) -> dict | None:
             return data if isinstance(data, dict) else None
     except CollectorDeadlineExceeded:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (URLError, TimeoutError, ValueError):
+        # HTTPError is a URLError subclass — catching both is redundant (Sonar).
         record_provider_budget_event("finnhub", timeouts=1)
         return None
 
@@ -279,7 +356,7 @@ def _http_get_any(url: str) -> object | None:
 
     request = Request(url)
     request.add_header("User-Agent", _BROWSER_USER_AGENT)
-    request.add_header("Accept", "application/json,text/plain,*/*")
+    request.add_header("Accept", _JSON_ACCEPT)
     try:
         timeout = capped_request_timeout_seconds(float(_TIMEOUT))
         started = time.perf_counter()
@@ -295,7 +372,8 @@ def _http_get_any(url: str) -> object | None:
             return data
     except CollectorDeadlineExceeded:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (URLError, TimeoutError, ValueError):
+        # HTTPError is a URLError subclass — catching both is redundant (Sonar).
         record_provider_budget_event("finnhub", timeouts=1)
         return None
 
@@ -702,7 +780,7 @@ def _fetch_official_pe_json(
             url,
             headers={
                 "User-Agent": _BROWSER_USER_AGENT,
-                "Accept": "application/json,text/plain,*/*",
+                "Accept": _JSON_ACCEPT,
             },
             timeout_seconds=float(_TIMEOUT),
             retries=0,
@@ -713,36 +791,100 @@ def _fetch_official_pe_json(
         )
     except CollectorDeadlineExceeded:
         raise
-    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+    except (HttpFetchError, TimeoutError, ValueError) as exc:
         raise _PeFetchTransient(str(exc)) from exc
 
 
-def _fetch_twse_daily_pe_snapshot(
+def _pe_transient_warning(exc: BaseException) -> str:
+    """Map a PE fetch failure to a retryable valuationWarning reason (#362 Post-D1).
+
+    Classification uses the underlying exception (HTTP status first), never a
+    substring of the raw message: that text embeds the request URL, and
+    persisting it would also drop the ``retry_after=N`` hint.
+    """
+    text = str(exc or "").strip()
+    if text.startswith(_PE_NEG_CACHE_PREFIX):
+        cached = text[len(_PE_NEG_CACHE_PREFIX) :].strip() or "transient_network:unknown"
+        return f"{cached}:negative_cache"
+    cause = exc.__cause__ if isinstance(exc.__cause__, BaseException) else None
+    if cause is None and text.startswith("provider_validation:"):
+        # Raised by our own payload validation — already a durable reason.
+        return text[:_PE_NEG_CACHE_REASON_MAX]
+    # Lazy import avoids a module cycle (first_pass → enrichment → key_stats).
+    from app.services.tw_research.first_pass import provider_exception_reason
+
+    return provider_exception_reason(cause if cause is not None else exc)
+
+
+def _load_official_pe_snapshot(
+    board: str,
     target_day: date,
+    *,
+    fetch_payload: Callable[[], object],
+    parse_payload: Callable[
+        [object], tuple[dict[str, dict[str, object]], str | None] | None
+    ],
 ) -> tuple[dict[str, dict[str, object]], str | None] | None:
-    hit, cached = _pe_cache_get("twse", target_day)
+    """Shared TWSE/TPEx PE day-file load with success/no-data + transient neg cache."""
+    hit, cached = _pe_cache_get(board, target_day)
     if hit:
         return cached
+    cached_reason = _pe_transient_neg_get(board, target_day)
+    if cached_reason is not None:
+        raise _PeFetchTransient(f"{_PE_NEG_CACHE_PREFIX}{cached_reason}")
     try:
-        payload = _fetch_official_pe_json(
-            f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
-            provider_name="twse_pe",
-            resource_id=target_day.isoformat(),
-        )
-    except _PeFetchTransient:
+        payload = fetch_payload()
+        snapshot = parse_payload(payload)
+    except _PeFetchTransient as exc:
+        _pe_transient_neg_set(board, target_day, reason=_pe_transient_warning(exc))
+        raise
+    if snapshot is None:
+        _pe_cache_set(board, target_day, _PE_NO_DATA)
         return None
-    if not isinstance(payload, dict):
-        return None
-    if str(payload.get("stat", "")).strip().upper() != "OK":
-        # Definitive no-data (holiday / empty day file) — cache the miss.
-        _pe_cache_set("twse", target_day, _PE_NO_DATA)
-        return None
+    _pe_cache_set(board, target_day, snapshot)
+    return snapshot
 
+
+_PE_NO_DATA_STAT_MARKERS = ("查無資料", "沒有符合條件", "no data")
+
+
+def _pe_stat_is_definitive_no_data(stat: object) -> bool:
+    """True for known empty-day / no-match provider messages (holiday files)."""
+    text = str(stat or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _PE_NO_DATA_STAT_MARKERS)
+
+
+def _require_pe_stat_ok(stat: object, *, board: str) -> None:
+    """Raise ``_PeFetchTransient`` unless ``stat`` is board-OK.
+
+    Callers must handle definitive no-data markers before calling this.
+    """
+    normalized = str(stat or "").strip()
+    if board == "TWSE":
+        if normalized.upper() == "OK":
+            return
+    elif normalized.lower() == "ok":
+        return
+    raise _PeFetchTransient(f"provider_validation:{board}_PE_stat_unexpected")
+
+
+def _parse_twse_pe_payload(
+    payload: object,
+) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    if not isinstance(payload, dict):
+        raise _PeFetchTransient("provider_validation:TWSE_PE_payload_not_object")
+    stat = payload.get("stat")
+    if _pe_stat_is_definitive_no_data(stat):
+        return None
+    _require_pe_stat_ok(stat, board="TWSE")
     fields = payload.get("fields")
     rows = payload.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
-        return None
-
+        raise _PeFetchTransient("provider_validation:TWSE_PE_fields_or_data_invalid")
+    if not rows:
+        raise _PeFetchTransient("provider_validation:TWSE_PE_empty_data")
     symbol_index = _field_index(fields, "證券代號")
     pe_index = _field_index(fields, "本益比")
     price_index = _field_index(fields, "收盤價")
@@ -756,52 +898,41 @@ def _fetch_twse_daily_pe_snapshot(
         if not symbol:
             continue
         pe_ratio, pe_status = _parse_official_pe_value(_row_value(row, pe_index))
-        pb_ratio = _parse_number(_row_value(row, pb_index))
-        div_yield = _parse_number(_row_value(row, yield_index))
         parsed_rows[symbol] = {
             "peRatio": pe_ratio,
             "peStatus": pe_status,
             "priceUsed": _parse_number(_row_value(row, price_index)),
-            "pbRatio": pb_ratio,
-            "dividendYieldPercent": div_yield,
+            "pbRatio": _parse_number(_row_value(row, pb_index)),
+            "dividendYieldPercent": _parse_number(_row_value(row, yield_index)),
         }
-    snapshot = (parsed_rows, _yyyymmdd_to_iso(payload.get("date")))
-    _pe_cache_set("twse", target_day, snapshot)
-    return snapshot
+    return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
 
 
-def _fetch_tpex_daily_pe_snapshot(
-    target_day: date,
+def _parse_tpex_pe_payload(
+    payload: object,
 ) -> tuple[dict[str, dict[str, object]], str | None] | None:
-    hit, cached = _pe_cache_get("tpex", target_day)
-    if hit:
-        return cached
-    try:
-        payload = _fetch_official_pe_json(
-            f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
-            provider_name="tpex_pe",
-            resource_id=target_day.isoformat(),
-        )
-    except _PeFetchTransient:
-        return None
     if not isinstance(payload, dict):
+        raise _PeFetchTransient("provider_validation:TPEx_PE_payload_not_object")
+    stat = payload.get("stat")
+    if _pe_stat_is_definitive_no_data(stat):
         return None
-    if str(payload.get("stat", "")).strip().lower() != "ok":
-        _pe_cache_set("tpex", target_day, _PE_NO_DATA)
-        return None
-
+    _require_pe_stat_ok(stat, board="TPEx")
     tables = payload.get("tables")
     if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
-        return None
-
+        raise _PeFetchTransient("provider_validation:TPEx_PE_tables_invalid")
     table = tables[0]
     fields = table.get("fields")
     rows = table.get("data")
     if not isinstance(fields, list) or not isinstance(rows, list):
-        return None
-
+        raise _PeFetchTransient("provider_validation:TPEx_PE_fields_or_data_invalid")
+    if not rows:
+        raise _PeFetchTransient("provider_validation:TPEx_PE_empty_data")
+    # Live peQryDate fields (2026-11-19): 股票代號, 公司名稱, 本益比, 每股股利,
+    # 股利年度, 殖利率(%), 股價淨值比, 財報年/季 — no close price column.
     symbol_index = _field_index(fields, "股票代號")
     pe_index = _field_index(fields, "本益比")
+    pb_index = _field_index(fields, "股價淨值比")
+    yield_index = _field_index(fields, "殖利率(%)", "殖利率")
     parsed_rows: dict[str, dict[str, object]] = {}
     for row in rows:
         if not isinstance(row, list):
@@ -814,10 +945,40 @@ def _fetch_tpex_daily_pe_snapshot(
             "peRatio": pe_ratio,
             "peStatus": pe_status,
             "priceUsed": None,
+            "pbRatio": _parse_number(_row_value(row, pb_index)),
+            "dividendYieldPercent": _parse_number(_row_value(row, yield_index)),
         }
-    snapshot = (parsed_rows, _yyyymmdd_to_iso(payload.get("date")))
-    _pe_cache_set("tpex", target_day, snapshot)
-    return snapshot
+    return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
+
+
+def _fetch_twse_daily_pe_snapshot(
+    target_day: date,
+) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    return _load_official_pe_snapshot(
+        "twse",
+        target_day,
+        fetch_payload=lambda: _fetch_official_pe_json(
+            f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
+            provider_name="twse_pe",
+            resource_id=target_day.isoformat(),
+        ),
+        parse_payload=_parse_twse_pe_payload,
+    )
+
+
+def _fetch_tpex_daily_pe_snapshot(
+    target_day: date,
+) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    return _load_official_pe_snapshot(
+        "tpex",
+        target_day,
+        fetch_payload=lambda: _fetch_official_pe_json(
+            f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
+            provider_name="tpex_pe",
+            resource_id=target_day.isoformat(),
+        ),
+        parse_payload=_parse_tpex_pe_payload,
+    )
 
 
 def _apply_tw_official_valuation(
@@ -828,10 +989,21 @@ def _apply_tw_official_valuation(
     fetch_snapshot = _fetch_tpex_daily_pe_snapshot if stock.exchange == "TPEx" else _fetch_twse_daily_pe_snapshot
     source_label = "TPEx official daily P/E" if stock.exchange == "TPEx" else "TWSE official daily P/E"
     saw_official_snapshot = False
+    last_transient: BaseException | None = None
+    saw_no_data_only = False
 
     for session_day in _recent_weekdays(_quote_local_date(stock, quote_record)):
-        snapshot = fetch_snapshot(session_day)
+        try:
+            snapshot = fetch_snapshot(session_day)
+        except _PeFetchTransient as exc:
+            last_transient = exc
+            # Stop weekday fan-out immediately on 429 so one board/day miss
+            # does not amplify across the lookback window.
+            if _pe_transient_is_rate_limited(exc):
+                break
+            continue
         if snapshot is None:
+            saw_no_data_only = True
             continue
         saw_official_snapshot = True
         rows, valuation_as_of = snapshot
@@ -899,13 +1071,17 @@ def _apply_tw_official_valuation(
                 True,
             )
 
+        # Authoritative blank / missing PE cell on a published row (e.g. N/A).
         return (
             _with_official_pb_yield(
                 _set_valuation_fields(
                     out,
                     pe_ratio=None,
                     valuation_as_of=valuation_as_of,
-                    valuation_warning=f"{source_label} did not report a usable P/E value.",
+                    valuation_warning=(
+                        f"{source_label} did not report a usable P/E value "
+                        f"(peStatus={row.get('peStatus') or 'missing'})."
+                    ),
                 )
             ),
             True,
@@ -920,7 +1096,38 @@ def _apply_tw_official_valuation(
             ),
             True,
         )
-    return out, saw_official_snapshot
+    # Stock row never found across the weekday walk.
+    if last_transient is not None:
+        # Prefer retryable warning even when an older day file loaded without
+        # this symbol (e.g. today 503 + yesterday OK but missing the stock).
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_warning=_pe_transient_warning(last_transient),
+            ),
+            True,
+        )
+    if saw_official_snapshot:
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_warning="official_pe_symbol_not_in_snapshot",
+            ),
+            True,
+        )
+    if saw_no_data_only:
+        # Every weekday returned definitive no-data (holiday / empty day file).
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_warning="official_pe_no_recent_snapshot",
+            ),
+            True,
+        )
+    return out, False
 
 
 def _apply_us_valuation(

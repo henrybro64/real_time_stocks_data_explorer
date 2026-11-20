@@ -230,9 +230,17 @@ def test_pe_fetch_timeout_capped_to_remaining_deadline(monkeypatch) -> None:
         resp = MagicMock()
         resp.status_code = 200
         resp.headers = {"content-type": "application/json"}
-        resp.content = b'{"stat":"OK","fields":[],"data":[]}'
+        # Minimal OK payload with one row so parsing succeeds; this test only
+        # asserts the request timeout cap under a shared collector deadline.
+        body = {
+            "stat": "OK",
+            "date": "20240628",
+            "fields": ["證券代號", "本益比", "收盤價", "股價淨值比", "殖利率(%)"],
+            "data": [["2330", "20", "100", "1.5", "2.0"]],
+        }
+        resp.content = b'{"stat":"OK"}'
         resp.raise_for_status = MagicMock()
-        resp.json.return_value = {"stat": "OK", "fields": [], "data": []}
+        resp.json.return_value = body
         return resp
 
     monkeypatch.setattr("app.services.http_client._send_http_request", fake_send)

@@ -1107,7 +1107,7 @@ def _apply_batch_result(
     return job, flags
 
 
-def _run_drain_batches(
+def _run_drain_batches(  # NOSONAR(S3776) batch loop control flow; #362 wires provider summary
     *,
     owner: str,
     run: ResearchRun,
@@ -1124,6 +1124,7 @@ def _run_drain_batches(
     already_complete = False
     stop_reason = "max_batches_reached"
     last_job: dict[str, Any] | None = None
+    provider_batch_summary: dict[str, Any] | None = None
 
     for _ in range(max(1, int(max_batches))):
         try:
@@ -1184,14 +1185,14 @@ def _run_drain_batches(
             )
 
         last_job, flags = _apply_batch_result(result, last_job=last_job)
+        summary = result.get("providerBatchSummary")
+        if isinstance(summary, dict):
+            provider_batch_summary = summary
         batches_run += int(flags.get("batches_delta") or 0)
         symbols_processed += int(flags.get("symbols_delta") or 0)
-        if flags.get("lease_held"):
-            lease_held = True
-        if flags.get("waiting_for_retry"):
-            waiting_for_retry = True
-        if flags.get("already_complete"):
-            already_complete = True
+        lease_held = lease_held or bool(flags.get("lease_held"))
+        waiting_for_retry = waiting_for_retry or bool(flags.get("waiting_for_retry"))
+        already_complete = already_complete or bool(flags.get("already_complete"))
         if flags.get("stop"):
             stop_reason = str(flags["stop"])
             break
@@ -1208,6 +1209,7 @@ def _run_drain_batches(
         lease_held=lease_held,
         already_complete=already_complete,
         last_job=last_job,
+        provider_batch_summary=provider_batch_summary,
     )
 
 
@@ -1224,6 +1226,7 @@ def _finalize_drain_tick(
     lease_held: bool,
     already_complete: bool,
     last_job: dict[str, Any] | None,
+    provider_batch_summary: dict[str, Any] | None = None,
 ) -> FirstPassDrainResult:
     try:
         reconciled = research_run_store.reconcile(owner)
@@ -1252,6 +1255,7 @@ def _finalize_drain_tick(
             owner,
             last_tick_at=datetime.now(UTC).isoformat(),
             last_outcome=stop_reason,
+            provider_batch_summary=provider_batch_summary,
         )
         try:
             reconciled = research_run_store.get(owner) or reconciled

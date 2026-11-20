@@ -5144,6 +5144,52 @@ def _first_pass_symbol_matches_filters(
     return True
 
 
+def _payload_has_retryable_field_failure(payload: dict) -> bool:
+    """True when persisted field reasons are still classified as retryable."""
+    from app.services.tw_research.first_pass import (
+        dominant_transient_field_error,
+        field_reason_is_retryable,
+    )
+
+    fields = payload.get("fields")
+    if not isinstance(fields, dict):
+        return False
+    if dominant_transient_field_error(fields):
+        return True
+    for raw in fields.values():
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("status") or "") not in {"unavailable", "partial"}:
+            continue
+        if field_reason_is_retryable(raw.get("reason")):
+            return True
+    return False
+
+
+def _retry_due(payload: dict, *, now: datetime) -> bool:
+    next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+    return next_retry is None or next_retry <= now
+
+
+def _partial_first_pass_needs_work(payload: dict, *, now: datetime) -> bool:
+    """Partial rows: durable gaps stay idle; one-shot revalidate or retryable fields work."""
+    if payload.get("retryExhausted"):
+        return False
+    revalidation_attempts = int(payload.get("revalidationAttempts") or 0)
+    flagged = payload.get("revalidatePartial") is True and revalidation_attempts < 1
+    if not (flagged or _payload_has_retryable_field_failure(payload)):
+        return False
+    return _retry_due(payload, now=now)
+
+
+def _failed_first_pass_needs_work(payload: dict, *, now: datetime) -> bool:
+    if payload.get("retryExhausted"):
+        return False
+    if str(payload.get("failureClass") or "") == "permanent":
+        return False
+    return _retry_due(payload, now=now)
+
+
 def _first_pass_symbol_needs_work(
     row: TwResearchFirstPassSymbolResult | None,
     *,
@@ -5153,24 +5199,20 @@ def _first_pass_symbol_needs_work(
     if row is None:
         return True
     status = str(row.status or "")
-    if status in {"ok", "partial", "pending"}:
-        # partial = usable incomplete evidence (missing PEG etc.); do not refetch.
+    payload = dict(row.payload_json or {})
+    if status == "ok":
+        return False
+    if status == "pending":
         # pending rows are claimed placeholders and should not be re-queued here.
-        return status == "pending"
+        return True
+    if status == "partial":
+        return _partial_first_pass_needs_work(payload, now=now)
     if status == "deferred":
-        payload = dict(row.payload_json or {})
         if payload.get("retryExhausted"):
             return False
-        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
-        return next_retry is None or next_retry <= now
+        return _retry_due(payload, now=now)
     if status == "failed":
-        payload = dict(row.payload_json or {})
-        if payload.get("retryExhausted"):
-            return False
-        if str(payload.get("failureClass") or "") == "permanent":
-            return False
-        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
-        return next_retry is None or next_retry <= now
+        return _failed_first_pass_needs_work(payload, now=now)
     return True
 
 

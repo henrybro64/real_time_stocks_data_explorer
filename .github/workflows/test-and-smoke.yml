@@ -80,7 +80,8 @@ jobs:
           if-no-files-found: warn
 
   frontend-playwright:
-    runs-on: ubuntu-latest
+    # Pin 24.04: ubuntu-latest moved to 26.04 and Playwright 1.59 has no chromium build for it.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16-alpine

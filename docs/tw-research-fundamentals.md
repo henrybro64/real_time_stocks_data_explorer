@@ -134,6 +134,7 @@ DATABASE_URL=postgresql+psycopg://henrybro@127.0.0.1:5432/stocks_test \
 1. Real MOPS/monthly-revenue adapter (never synthetic insights).
 2. Operating cash flow / debt adapters.
 3. Optional explainable `fundamental_*` hint outcomes (analyst still owns selection).
-4. TPEx official PB/yield field mapping verification against live payloads.
+4. ~~TPEx official PB/yield field mapping~~ — verified live `peQryDate` fields
+   (2026-11-19) include `殖利率(%)` / `股價淨值比`; parser updated in #362 Post-D1.
 5. Live Ubuntu/k3s performance measurements remain `ubuntu_measurement_pending`.
 6. Apply Alembic `20261111_0023` + `20261111_0024` before using durable APIs in a real DB.

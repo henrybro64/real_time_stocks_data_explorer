@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 # Same eligibility set as standalone adoption (#359 / repository).
 _REARM_ELIGIBLE_JOB_STATUS = frozenset({"pending", "running", "deferred", "partial"})
 _ISO_Z_UTC_SUFFIX = "+00:00"
+_FIRST_PASS_DRAIN_AUTHORIZED_NOTE = (
+    "First-pass drain authorized for this research-run job only."
+)
+_SYSTEMIC_PROGRAMMING_ERROR_PREFIX = "systemic_programming_error:"
 
 
 def _parse_iso_utc(value: str) -> datetime:
@@ -451,7 +455,7 @@ class ResearchRunStore:
                 run.append_note(note)
             if available:
                 run.append_note(
-                    "First-pass drain authorized for this research-run job only."
+                    _FIRST_PASS_DRAIN_AUTHORIZED_NOTE
                 )
             else:
                 run.append_note(str(reason))
@@ -621,7 +625,7 @@ class ResearchRunStore:
                     f"Adopted standalone first-pass job {job_id}.",
                     "Preserved existing per-symbol evidence; remaining symbols stay pending.",
                     (
-                        "First-pass drain authorized for this research-run job only."
+                        _FIRST_PASS_DRAIN_AUTHORIZED_NOTE
                         if available
                         else str(reason)
                     ),
@@ -809,8 +813,9 @@ class ResearchRunStore:
         *,
         last_tick_at: str,
         last_outcome: str,
+        provider_batch_summary: dict[str, Any] | None = None,
     ) -> ResearchRun | None:
-        """Best-effort tick telemetry on the research run (#349)."""
+        """Best-effort tick telemetry on the research run (#349/#362)."""
         with self._lock:
             run = self._load_locked(user_id)
             if run is None:
@@ -818,6 +823,9 @@ class ResearchRunStore:
             meta = dict(run.dimensions.get("firstPassDrain") or {})
             meta["lastTickAt"] = last_tick_at
             meta["lastOutcome"] = last_outcome
+            if isinstance(provider_batch_summary, dict):
+                # One bounded batch summary on the run (not duplicated per symbol).
+                meta["providerBatchSummary"] = dict(provider_batch_summary)
             run.dimensions["firstPassDrain"] = meta
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
@@ -1150,7 +1158,7 @@ class ResearchRunStore:
                     run.append_note(note)
                 if available:
                     run.append_note(
-                        "First-pass drain authorized for this research-run job only."
+                        _FIRST_PASS_DRAIN_AUTHORIZED_NOTE
                     )
                 else:
                     run.append_note(str(reason))
@@ -1388,6 +1396,7 @@ class ResearchRunStore:
             run.technical_scan_id,
             tuple(run.notes[-3:]),
         )
+        prior_progress = dict(run.dimensions.get("firstPassProgress") or {})
         # Prefer phase2 when a technical scan is attached.
         if run.technical_scan_id:
             self._reconcile_from_scan_locked(run)
@@ -1400,7 +1409,11 @@ class ResearchRunStore:
             run.technical_scan_id,
             tuple(run.notes[-3:]),
         )
-        if before != after:
+        after_progress = dict(run.dimensions.get("firstPassProgress") or {})
+        # Persist when counts/errors move even if phase/status stay ``running``
+        # (#362 Post-D1 stale firstPassProgress).
+        progress_changed = prior_progress != after_progress
+        if before != after or progress_changed:
             run.updated_at = datetime.now(UTC).isoformat()
             return True
         return False
@@ -1473,7 +1486,7 @@ class ResearchRunStore:
             if last_error and last_error != prior_last_error:
                 run.append_note(f"lastError:{last_error}")
             # Systemic programming_error disarms drain.
-            if last_error and str(last_error).startswith("systemic_programming_error:"):
+            if last_error and str(last_error).startswith(_SYSTEMIC_PROGRAMMING_ERROR_PREFIX):
                 run.schedule_enabled = False
                 if "first_pass_drain_disarmed_systemic_programming_error" not in run.notes:
                     run.append_note("first_pass_drain_disarmed_systemic_programming_error")
@@ -1681,7 +1694,8 @@ class ResearchRunStore:
             return None
         try:
             counts = counter(job_id)
-        except Exception:  # noqa: BLE001 — progress is best-effort, never fail reconcile
+        except Exception:  # noqa: BLE001
+            # Progress is best-effort; never fail reconcile on count errors.
             return None
         if not isinstance(counts, Mapping) or "total" not in counts:
             return None
@@ -1720,13 +1734,13 @@ def _job_error_fields(job: dict[str, Any]) -> tuple[str | None, str | None, str 
             if text.startswith("error:"):
                 last_error = text[len("error:") :]
                 break
-            if text.startswith("systemic_programming_error:"):
+            if text.startswith(_SYSTEMIC_PROGRAMMING_ERROR_PREFIX):
                 last_error = text
                 break
     last_error_class = job.get("last_error_class") or job.get("lastErrorClass")
     next_retry_at = job.get("next_retry_at") or job.get("nextRetryAt")
     if not last_error_class and last_error:
-        if str(last_error).startswith("systemic_programming_error:"):
+        if str(last_error).startswith(_SYSTEMIC_PROGRAMMING_ERROR_PREFIX):
             last_error_class = "programming_error"
         else:
             last_error_class = str(last_error).split(":", 1)[0]
