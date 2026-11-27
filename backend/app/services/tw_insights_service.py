@@ -1,45 +1,44 @@
 from __future__ import annotations
 
 import html
-import random
-from datetime import datetime
+import logging
 import re
+from datetime import datetime
 from zoneinfo import ZoneInfo
-import math
 
 from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError, fetch_text
 
+logger = logging.getLogger(__name__)
 
-# Monthly revenue and dividend history are placeholder series generated from a
-# symbol seed, not filed company data. Anything consuming this module for
-# reasoning (rather than UI placeholder rendering) must check this flag first.
-TW_INSIGHTS_REVENUE_IS_SYNTHETIC = True
-TW_INSIGHTS_DIVIDENDS_ARE_SYNTHETIC = True
+# Official monthly revenue is served from stored OpenAPI snapshots when present.
+# Synthetic revenue/dividend series are no longer emitted (#362 M1).
+TW_INSIGHTS_REVENUE_IS_SYNTHETIC = False
+TW_INSIGHTS_DIVIDENDS_ARE_SYNTHETIC = False
+
+_REVENUE_UNAVAILABLE_REASON = "official_monthly_revenue_not_collected"
+_DIVIDEND_UNAVAILABLE_REASON = "official_dividend_history_not_collected"
 
 
 def get_tw_stock_insights(stock: StockRecord) -> dict[str, object]:
-    """Build Taiwan-only detail insights (revenue, peer snapshot, dividends).
+    """Build Taiwan-only detail insights (official revenue when stored, peer snapshot).
 
-    Revenue and dividend series are synthetic placeholders; see
-    :data:`TW_INSIGHTS_REVENUE_IS_SYNTHETIC`.
+    Revenue comes from persisted official monthly-revenue observations only.
+    Missing collection stays explicitly unavailable. Dividend history is not
+    collected in Milestone 1 and is never fabricated.
     """
-    seed = sum(ord(char) for char in stock.symbol)
-    rng = random.Random(seed)
     now = datetime.now(ZoneInfo("Asia/Taipei"))
-
-    revenue_points = _build_revenue_points(now, rng)
-    peer_payload = _build_peer_insight(stock, now, rng)
-    dividend_years = _build_dividend_years(now.year, rng)
-
+    revenue = _load_official_revenue(stock)
+    peer_payload = _build_peer_insight(stock, now)
+    dividends = {
+        "status": "unavailable",
+        "reason": _DIVIDEND_UNAVAILABLE_REASON,
+        "source": None,
+        "avgCashYield2Y": None,
+        "years": [],
+    }
     return {
-        "revenue": {
-            "lastUpdated": now.isoformat(),
-            "latestRevenueK": revenue_points[-1]["revenueK"],
-            "latestMomPercent": revenue_points[-1]["momPercent"],
-            "latestYoyPercent": revenue_points[-1]["yoyPercent"],
-            "points": revenue_points,
-        },
+        "revenue": revenue,
         "peer": {
             "sector": peer_payload["sector"],
             "asOf": peer_payload["asOf"],
@@ -48,35 +47,102 @@ def get_tw_stock_insights(stock: StockRecord) -> dict[str, object]:
             "compareUrl": peer_payload["compareUrl"],
             "topMovers": peer_payload["topMovers"],
         },
-        "dividends": {
-            "avgCashYield2Y": round(
-                (dividend_years[0]["cashYieldPercent"] + dividend_years[1]["cashYieldPercent"]) / 2,
-                2,
-            ),
-            "years": dividend_years,
-        },
+        "dividends": dividends,
+    }
+
+
+def _load_official_revenue(stock: StockRecord) -> dict[str, object]:
+    unavailable = {
+        "status": "unavailable",
+        "reason": _REVENUE_UNAVAILABLE_REASON,
+        "source": None,
+        "reportingPeriod": None,
+        "reportGeneratedDate": None,
+        "retrievedAt": None,
+        "lastUpdated": None,
+        "latestRevenueK": None,
+        "latestMomPercent": None,
+        "latestYoyPercent": None,
+        "points": [],
+    }
+    try:
+        from app.db.session import SessionLocal
+        from app.services.tw_monthly_revenue.service import get_monthly_revenue_for_stock
+    except Exception:  # noqa: BLE001 — soft degrade when DB wiring unavailable
+        return unavailable
+
+    if SessionLocal is None:
+        return unavailable
+
+    try:
+        with SessionLocal() as session:
+            observation = get_monthly_revenue_for_stock(session, stock.id)
+    except Exception as exc:  # noqa: BLE001 — keep detail page honest on DB errors
+        message = str(exc).lower()
+        if "no such table" in message or "does not exist" in message:
+            return unavailable
+        logger.warning(
+            "Failed reading official monthly revenue for insights",
+            extra={
+                "event": "tw_insights.monthly_revenue_read_failed",
+                "stock_id": stock.id,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return {
+            **unavailable,
+            "reason": f"official_monthly_revenue_read_failed:{type(exc).__name__}",
+        }
+
+    if observation is None:
+        return unavailable
+
+    revenue_k = observation.get("revenueNtThousand")
+    latest_revenue_k = int(revenue_k) if isinstance(revenue_k, (int, float)) else None
+    reporting_period = observation.get("reportingPeriod")
+    points: list[dict[str, object]] = []
+    if isinstance(reporting_period, str) and latest_revenue_k is not None:
+        # One official month only — never invent a multi-month trend from a single snapshot.
+        points.append(
+            {
+                "month": reporting_period.replace("-", "/"),
+                "revenueK": latest_revenue_k,
+                "momPercent": observation.get("momPercent"),
+                "yoyPercent": observation.get("yoyPercent"),
+            }
+        )
+    return {
+        "status": "ok",
+        "reason": None,
+        "source": observation.get("source"),
+        "reportingPeriod": reporting_period,
+        "reportGeneratedDate": observation.get("reportGeneratedDate"),
+        "retrievedAt": observation.get("lastSeenAt"),
+        "lastUpdated": observation.get("lastSeenAt"),
+        "latestRevenueK": latest_revenue_k,
+        "latestMomPercent": observation.get("momPercent"),
+        "latestYoyPercent": observation.get("yoyPercent"),
+        "points": points,
     }
 
 
 def _build_peer_insight(
     stock: StockRecord,
     now: datetime,
-    rng: random.Random,
 ) -> dict[str, object]:
-    fallback_metrics = _build_peer_metrics(rng)
     compare_data = _fetch_yahoo_compare(stock)
     if compare_data is None:
         return {
             "sector": "Taiwan industry",
             "asOf": now.date().isoformat(),
-            "companyCount": fallback_metrics[0]["total"] if fallback_metrics else 0,
-            "metrics": fallback_metrics,
+            "companyCount": 0,
+            "metrics": [],
             "compareUrl": None,
             "topMovers": [],
         }
 
     summary = compare_data["summary"]
-    metrics = compare_data["metrics"] or fallback_metrics
+    metrics = compare_data["metrics"] or []
     total = max(
         [metric.get("total", 0) for metric in metrics if isinstance(metric.get("total"), int)]
         or [summary.get("companyCount", 0)],
@@ -90,52 +156,6 @@ def _build_peer_insight(
         "compareUrl": compare_data["url"],
         "topMovers": compare_data["topMovers"],
     }
-
-
-def _build_revenue_points(now: datetime, rng: random.Random) -> list[dict[str, object]]:
-    points: list[dict[str, object]] = []
-    base = 3_500_000 + rng.randint(0, 2_000_000)
-    for offset in range(23, -1, -1):
-        year = now.year
-        month = now.month - offset
-        while month <= 0:
-            month += 12
-            year -= 1
-        seasonal = 1.0 + 0.07 * math.sin((month / 12) * 6.28318)
-        trend = 1 + ((23 - offset) / 23) * 0.12
-        noise = 1 + rng.uniform(-0.04, 0.04)
-        revenue_k = int(base * seasonal * trend * noise)
-        mom = round(rng.uniform(-9.0, 10.5), 2)
-        yoy = round(rng.uniform(-3.0, 27.0), 2)
-        points.append(
-            {
-                "month": f"{year:04d}/{month:02d}",
-                "revenueK": revenue_k,
-                "momPercent": mom,
-                "yoyPercent": yoy,
-            }
-        )
-    return points
-
-
-def _build_peer_metrics(rng: random.Random) -> list[dict[str, object]]:
-    labels = [("近1月", "1M"), ("近3月", "3M"), ("近6月", "6M"), ("近1年", "1Y")]
-    metrics: list[dict[str, object]] = []
-    for label, period in labels:
-        company = round(rng.uniform(5.0, 120.0), 2)
-        industry = round(company * rng.uniform(0.35, 0.75), 2)
-        rank = rng.randint(1, 35)
-        metrics.append(
-            {
-                "label": label,
-                "period": period,
-                "companyPercent": company,
-                "industryAveragePercent": industry,
-                "rank": rank,
-                "total": 89,
-            }
-        )
-    return metrics
 
 
 def _fetch_yahoo_compare(stock: StockRecord) -> dict[str, object] | None:
@@ -320,22 +340,3 @@ def _parse_top_movers(lines: list[str]) -> list[dict[str, object]]:
         if len(movers) >= 10:
             break
     return movers
-
-
-def _build_dividend_years(current_year: int, rng: random.Random) -> list[dict[str, object]]:
-    years: list[dict[str, object]] = []
-    for year in range(current_year - 1, current_year - 7, -1):
-        cash = round(rng.uniform(0.8, 4.2), 4)
-        stock = round(rng.uniform(0.0, 1.8), 4) if rng.random() > 0.7 else 0.0
-        cash_yield = round(rng.uniform(1.2, 6.4), 2)
-        years.append(
-            {
-                "year": year,
-                "cashDividend": cash,
-                "stockDividend": stock,
-                "cashYieldPercent": cash_yield,
-                "exDividendDate": f"{year + 1}-06-{rng.randint(5, 28):02d}",
-                "payDate": f"{year + 1}-07-{rng.randint(5, 28):02d}",
-            }
-        )
-    return years

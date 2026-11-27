@@ -57,11 +57,11 @@
   },
   {
     "field": "monthly_revenue_yoy_mom",
-    "implementation": "not_implemented",
-    "provider": "none (tw_insights revenue is SYNTHETIC — forbidden)",
+    "implementation": "implemented",
+    "provider": "TWSE t187ap05_L / TPEx mopsfin_t187ap05_O (persisted)",
     "boards": ["TWSE", "TPEx"],
     "freshness_class": "monthly_closed_month",
-    "notes": "Requires real MOPS/official monthly revenue adapter."
+    "notes": "Milestone 1 latest-month only; MOPS history backfill deferred."
   },
   {
     "field": "gross_operating_net_margins",

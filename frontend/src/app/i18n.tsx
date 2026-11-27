@@ -496,12 +496,15 @@ export type TranslationKey =
   | "twInsights.unavailable"
   | "twInsights.revenue.title"
   | "twInsights.revenue.latest"
+  | "twInsights.revenue.unavailable"
+  | "twInsights.revenue.singleMonthNote"
   | "twInsights.peer.title"
   | "twInsights.peer.period"
   | "twInsights.peer.company"
   | "twInsights.peer.industry"
   | "twInsights.peer.rank"
   | "twInsights.dividend.title"
+  | "twInsights.dividend.unavailable"
   | "twInsights.dividend.avg2y"
   | "twInsights.dividend.year"
   | "twInsights.dividend.cash"
@@ -1119,17 +1122,23 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "aiSettings.saving": "Saving...",
     "twInsights.title": "Taiwan fundamentals snapshot",
     "twInsights.description":
-      "Additional Taiwan-only context similar to local investor portals: revenue trend, peer momentum, and dividends.",
+      "Taiwan-only context: official monthly revenue when collected, peer momentum, and dividend history when available.",
     "twInsights.loading": "Loading Taiwan insights",
     "twInsights.unavailable": "Taiwan insights are not available for this symbol right now.",
-    "twInsights.revenue.title": "Monthly revenue trend (K TWD)",
+    "twInsights.revenue.title": "Official monthly revenue (K TWD)",
     "twInsights.revenue.latest": "Latest",
+    "twInsights.revenue.unavailable":
+      "Official monthly revenue has not been collected for this symbol yet.",
+    "twInsights.revenue.singleMonthNote":
+      "Showing the latest official reporting month only; a multi-month trend requires historical collection.",
     "twInsights.peer.title": "Peer performance snapshot",
     "twInsights.peer.period": "Period",
     "twInsights.peer.company": "Company",
     "twInsights.peer.industry": "Industry avg",
     "twInsights.peer.rank": "Rank",
     "twInsights.dividend.title": "Dividend history",
+    "twInsights.dividend.unavailable":
+      "Official dividend history is not collected yet; values are not invented.",
     "twInsights.dividend.avg2y": "Avg cash yield (2Y)",
     "twInsights.dividend.year": "Year",
     "twInsights.dividend.cash": "Cash",
@@ -1675,17 +1684,20 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "aiSettings.checking": "檢查中...",
     "aiSettings.saving": "儲存中...",
     "twInsights.title": "台股基本面快照",
-    "twInsights.description": "僅台股顯示：月營收趨勢、同業表現與股利資訊。",
+    "twInsights.description": "僅台股顯示：官方月營收（已收集時）、同業表現與股利資訊（有資料時）。",
     "twInsights.loading": "載入台股補充資訊中",
     "twInsights.unavailable": "目前無法顯示此股票的台股補充資訊。",
-    "twInsights.revenue.title": "月營收趨勢（仟元）",
+    "twInsights.revenue.title": "官方月營收（仟元）",
     "twInsights.revenue.latest": "最新",
+    "twInsights.revenue.unavailable": "尚未收集此股票的官方月營收。",
+    "twInsights.revenue.singleMonthNote": "目前僅顯示最新官方申報月份；多月趨勢需歷史收集。",
     "twInsights.peer.title": "同業表現快照",
     "twInsights.peer.period": "期間",
     "twInsights.peer.company": "公司",
     "twInsights.peer.industry": "同業平均",
     "twInsights.peer.rank": "排名",
     "twInsights.dividend.title": "歷年股利",
+    "twInsights.dividend.unavailable": "尚未收集官方股利歷史；不會以合成數值代替。",
     "twInsights.dividend.avg2y": "近2年平均現金殖利率",
     "twInsights.dividend.year": "年度",
     "twInsights.dividend.cash": "現金股利",

@@ -665,16 +665,22 @@ export type KeyStatistics = {
 
 export type TWRevenuePoint = {
   month: string;
-  revenueK: number;
-  momPercent: number;
-  yoyPercent: number;
+  revenueK: number | null;
+  momPercent: number | null;
+  yoyPercent: number | null;
 };
 
 export type TWRevenueInsight = {
-  lastUpdated: string;
-  latestRevenueK: number;
-  latestMomPercent: number;
-  latestYoyPercent: number;
+  status: "ok" | "unavailable";
+  reason: string | null;
+  source: string | null;
+  reportingPeriod: string | null;
+  reportGeneratedDate: string | null;
+  retrievedAt: string | null;
+  lastUpdated: string | null;
+  latestRevenueK: number | null;
+  latestMomPercent: number | null;
+  latestYoyPercent: number | null;
   points: TWRevenuePoint[];
 };
 
@@ -716,7 +722,10 @@ export type TWDividendYear = {
 };
 
 export type TWDividendInsight = {
-  avgCashYield2Y: number;
+  status: "ok" | "unavailable";
+  reason: string | null;
+  source: string | null;
+  avgCashYield2Y: number | null;
   years: TWDividendYear[];
 };
 

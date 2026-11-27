@@ -3,17 +3,23 @@ from pydantic import BaseModel
 
 class TWRevenuePointResponse(BaseModel):
     month: str
-    revenueK: int
-    momPercent: float
-    yoyPercent: float
+    revenueK: int | None = None
+    momPercent: float | None = None
+    yoyPercent: float | None = None
 
 
 class TWRevenueInsightResponse(BaseModel):
-    lastUpdated: str
-    latestRevenueK: int
-    latestMomPercent: float
-    latestYoyPercent: float
-    points: list[TWRevenuePointResponse]
+    status: str
+    reason: str | None = None
+    source: str | None = None
+    reportingPeriod: str | None = None
+    reportGeneratedDate: str | None = None
+    retrievedAt: str | None = None
+    lastUpdated: str | None = None
+    latestRevenueK: int | None = None
+    latestMomPercent: float | None = None
+    latestYoyPercent: float | None = None
+    points: list[TWRevenuePointResponse] = []
 
 
 class TWPeerMetricResponse(BaseModel):
@@ -54,8 +60,11 @@ class TWDividendYearResponse(BaseModel):
 
 
 class TWDividendInsightResponse(BaseModel):
-    avgCashYield2Y: float
-    years: list[TWDividendYearResponse]
+    status: str
+    reason: str | None = None
+    source: str | None = None
+    avgCashYield2Y: float | None = None
+    years: list[TWDividendYearResponse] = []
 
 
 class TWStockInsightsResponse(BaseModel):

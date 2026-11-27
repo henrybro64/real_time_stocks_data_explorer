@@ -4,6 +4,7 @@ import logging
 import random
 import threading
 import time
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Callable, Literal
 from urllib.parse import urlparse
@@ -395,6 +396,58 @@ def fetch_json(
                 json_parse_failed=True,
             ),
         ) from exc
+
+
+@dataclass(frozen=True)
+class HttpResponseMeta:
+    """Status/headers/body from a completed upstream response (incl. 304)."""
+
+    status_code: int
+    headers: dict[str, str]
+    content: bytes
+    url: str
+
+
+def fetch_response_meta(
+    url: str,
+    *,
+    method: HttpMethod = "GET",
+    params: dict[str, str] | None = None,
+    data: dict[str, str] | None = None,
+    json_body: object | None = None,
+    headers: dict[str, str] | None = None,
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+    retries: int = _DEFAULT_RETRIES,
+    allow_insecure_fallback_hosts: set[str] | None = None,
+    provider_name: str | None = None,
+    operation_name: str | None = None,
+    resource_id: str | None = None,
+    retryable_status_codes: frozenset[int] | None = None,
+    retry_rate_limits: bool = True,
+) -> HttpResponseMeta:
+    """Fetch bytes + headers without requiring a JSON body (supports 304)."""
+    response = _request_with_retries(
+        url,
+        method=method,
+        params=params,
+        data=data,
+        json_body=json_body,
+        headers=headers,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        allow_insecure_fallback_hosts=allow_insecure_fallback_hosts,
+        provider_name=provider_name,
+        operation_name=operation_name,
+        resource_id=resource_id,
+        retryable_status_codes=retryable_status_codes,
+        retry_rate_limits=retry_rate_limits,
+    )
+    return HttpResponseMeta(
+        status_code=response.status_code,
+        headers={key: value for key, value in response.headers.items()},
+        content=bytes(response.content or b""),
+        url=str(response.url),
+    )
 
 
 def fetch_text(
