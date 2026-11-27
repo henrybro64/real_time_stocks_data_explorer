@@ -173,7 +173,9 @@ def test_relative_price_basis_is_deterministic() -> None:
     assert first.as_dict() == second.as_dict()
 
 
-def test_first_pass_dedupes_before_collection_and_keeps_names() -> None:
+def test_first_pass_dedupes_before_collection_and_keeps_names(monkeypatch) -> None:
+    # No official monthly-revenue tables in this unit path — stay unavailable.
+    monkeypatch.setattr("app.db.session.SessionLocal", None)
     stock = stock_record(
         "TW:2330",
         market="TW",

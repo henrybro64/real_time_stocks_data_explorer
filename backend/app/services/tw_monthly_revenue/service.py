@@ -248,7 +248,8 @@ def ingest_board_monthly_revenue(
                 reporting_period_yyyymm=None,
                 report_generated_date=None,
                 parser_version=PARSER_VERSION,
-                validation_status="rejected_conditional_without_cache",
+                # Keep within validation_status String(32).
+                validation_status="rejected_304_no_cache",
                 validation_errors=["conditional_304_without_usable_cache"],
                 row_count=None,
                 error_message="Received HTTP 304 without an accepted cached body",
@@ -257,7 +258,7 @@ def ingest_board_monthly_revenue(
             return BoardIngestResult(
                 board=board,
                 outcome="rejected",
-                validation_status="rejected_conditional_without_cache",
+                validation_status="rejected_304_no_cache",
                 reporting_period_yyyymm=None,
                 row_count=None,
                 raw_fetch_id=raw.id,

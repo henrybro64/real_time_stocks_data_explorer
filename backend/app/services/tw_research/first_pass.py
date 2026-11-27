@@ -785,8 +785,17 @@ def _attach_monthly_revenue_field(
                 }
     except Exception as exc:  # noqa: BLE001 — keep first-pass honest on DB errors
         message = str(exc).lower()
-        if "no such table" in message or "does not exist" in message:
+        missing_table = (
+            "no such table" in message
+            or ("relation" in message and "does not exist" in message)
+            or ("table" in message and "does not exist" in message)
+        )
+        if missing_table:
+            # Migration not applied yet — honest gap, not an infrastructure outage.
             reason = "official_monthly_revenue_not_collected"
+        elif is_infrastructure_failure(exc):
+            # Connection / coordination faults must fail closed for retry eligibility.
+            raise
         else:
             reason = f"official_monthly_revenue_read_failed:{type(exc).__name__}"
             logger.warning(

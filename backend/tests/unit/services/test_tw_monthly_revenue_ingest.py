@@ -244,7 +244,8 @@ def test_conditional_304_without_usable_cache_rejected(session_factory) -> None:
     with session_factory() as session:
         # Force a 304 even without sending If-None-Match (provider quirk).
         result = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=fetch_304)
-        assert result.validation_status == "rejected_conditional_without_cache"
+        assert result.validation_status == "rejected_304_no_cache"
+        assert len(result.validation_status) <= 32
         assert session.execute(select(func.count()).select_from(TwMonthlyRevenueObservation)).scalar_one() == 0
 
 
@@ -381,11 +382,90 @@ def test_insights_and_first_pass_use_stored_official_data(session_factory, monke
     assert field.value["momPercent"] is not None
 
 
+def test_attach_monthly_revenue_reraises_infrastructure_failures(monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from app.services.tw_research.enrichment import EnrichmentResult
+    from app.services.tw_research.first_pass import _attach_monthly_revenue_field
+
+    class _BrokenSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def boom_get(_session, _stock_id):
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: _BrokenSession())
+    monkeypatch.setattr(
+        "app.services.tw_monthly_revenue.service.get_monthly_revenue_for_stock",
+        boom_get,
+    )
+    scratch = EnrichmentResult(stock_id="TW:2330", qualified=True)
+    with pytest.raises(OperationalError):
+        _attach_monthly_revenue_field(
+            scratch,
+            stock_id="TW:2330",
+            captured_at="2026-11-27T00:00:00Z",
+        )
+    assert "monthly_revenue_yoy_mom" not in scratch.fields
+
+
 def test_observation_stale_flag_uses_taipei_calendar_months() -> None:
     now = datetime(2026, 11, 27, tzinfo=ZoneInfo("Asia/Taipei"))
     assert observation_period_is_stale("202610", now=now) is False  # 1 month behind
     assert observation_period_is_stale("202609", now=now) is False  # 2 months behind
     assert observation_period_is_stale("202608", now=now) is True  # 3 months behind
+
+
+def test_unchanged_financials_still_refresh_report_generated_date(session_factory) -> None:
+    twse_body = _body("twse_latest_month.json")
+    fetch_first = _fetch_factory(
+        {
+            "t187ap05_L": HttpResponseMeta(
+                status_code=200,
+                headers={"etag": 'W/"meta-1"'},
+                content=twse_body,
+                url="https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+            )
+        }
+    )
+    payload = json.loads(twse_body.decode("utf-8"))
+    for row in payload:
+        if row["公司代號"] == "2330":
+            row["出表日期"] = "1151201"  # 2026-12-01 — financials unchanged
+            row["公司名稱"] = "TSMC-RENAMED"
+            break
+    fetch_meta = _fetch_factory(
+        {
+            "t187ap05_L": HttpResponseMeta(
+                status_code=200,
+                headers={"etag": 'W/"meta-2"'},
+                content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                url="https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+            )
+        }
+    )
+    with session_factory() as session:
+        first = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=fetch_first)
+        assert first.outcome == "accepted"
+        second = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=fetch_meta)
+        assert second.outcome == "accepted"
+        assert second.stats.get("revised", 0) == 0
+        assert second.stats.get("unchanged", 0) >= 1
+        obs = get_monthly_revenue_for_stock(session, "TW:2330")
+        assert obs is not None
+        assert obs["reportGeneratedDate"] == "2026-12-01"
+        row = session.execute(
+            select(TwMonthlyRevenueObservation).where(
+                TwMonthlyRevenueObservation.stock_id == "TW:2330"
+            )
+        ).scalars().first()
+        assert row is not None
+        assert row.company_name == "TSMC-RENAMED"
+        assert row.revision_count == 0
 
 
 def test_advisory_lock_skips_second_board_without_raw_fetch(session_factory, monkeypatch) -> None:

@@ -261,6 +261,13 @@ def apply_accepted_rows(
             continue
 
         if existing.value_hash == parsed.value_hash:
+            # Financial values unchanged — still refresh non-hashed metadata so
+            # reportGeneratedDate / name / industry stay aligned with the raw row.
+            existing.company_name = parsed.company_name
+            existing.industry = parsed.industry
+            existing.report_generated_date = parsed.report_generated_date
+            existing.note = parsed.note
+            existing.missing_fields_json = dict(parsed.missing_fields)
             existing.last_seen_at = now
             existing.raw_fetch_id = raw_fetch.id
             unchanged += 1
