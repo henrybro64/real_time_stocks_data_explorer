@@ -386,3 +386,48 @@ def test_observation_stale_flag_uses_taipei_calendar_months() -> None:
     assert observation_period_is_stale("202610", now=now) is False  # 1 month behind
     assert observation_period_is_stale("202609", now=now) is False  # 2 months behind
     assert observation_period_is_stale("202608", now=now) is True  # 3 months behind
+
+
+def test_advisory_lock_skips_second_board_without_raw_fetch(session_factory, monkeypatch) -> None:
+    twse_body = _body("twse_latest_month.json")
+    tpex_body = _body("tpex_latest_month.json")
+    fetch = _fetch_factory(
+        {
+            "t187ap05_L": HttpResponseMeta(
+                status_code=200,
+                headers={"etag": 'W/"twse-lock"'},
+                content=twse_body,
+                url="https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+            ),
+            "mopsfin_t187ap05_O": HttpResponseMeta(
+                status_code=200,
+                headers={"etag": '"tpex-lock"'},
+                content=tpex_body,
+                url="https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
+            ),
+        }
+    )
+    lock_calls: list[str] = []
+
+    def fake_lock(_session, *, board: str) -> bool:
+        lock_calls.append(board)
+        return board != "TPEx"
+
+    monkeypatch.setattr(
+        "app.services.tw_monthly_revenue.service._try_collect_advisory_lock",
+        fake_lock,
+    )
+
+    with session_factory() as session:
+        results = collect_latest_monthly_revenue(session, fetch_fn=fetch)
+        assert [item.outcome for item in results] == ["accepted", "skipped_locked"]
+        assert lock_calls == ["TWSE", "TPEx"]
+        tpex_raw = session.execute(
+            select(TwFundamentalRawFetch).where(TwFundamentalRawFetch.board == "TPEx")
+        ).scalars().all()
+        assert tpex_raw == []
+        twse_raw = session.execute(
+            select(TwFundamentalRawFetch).where(TwFundamentalRawFetch.board == "TWSE")
+        ).scalars().all()
+        assert twse_raw
+        assert all(row.validation_status == "accepted" for row in twse_raw)

@@ -46,8 +46,12 @@ _PROVIDER_NAMES = {
     "TWSE": "twse_openapi",
     "TPEx": "tpex",
 }
-# Stable 64-bit key for pg_try_advisory_xact_lock (Issue #362 M1 collect).
-_COLLECT_ADVISORY_LOCK_KEY = 362_000_001
+# Per-board transaction-scoped pg_try_advisory_xact_lock keys (#362 M1).
+# Taken at the start of each board ingest and held until that board's commit.
+_BOARD_ADVISORY_LOCK_KEYS = {
+    "TWSE": 362_000_001,
+    "TPEx": 362_000_002,
+}
 _TAIPEI = ZoneInfo("Asia/Taipei")
 _STALE_MONTHS = 2
 
@@ -124,22 +128,11 @@ def collect_latest_monthly_revenue(
     boards: tuple[str, ...] = ("TWSE", "TPEx"),
     fetch_fn: FetchFn | None = None,
 ) -> list[BoardIngestResult]:
-    """Bounded operator-driven collection for both boards (no scheduler)."""
-    if not _try_collect_advisory_lock(session):
-        return [
-            BoardIngestResult(
-                board=board,
-                outcome="skipped_locked",
-                validation_status="skipped_locked",
-                reporting_period_yyyymm=None,
-                row_count=None,
-                raw_fetch_id=None,
-                stats={},
-                errors=["advisory_lock_held"],
-                error_message="Another monthly-revenue collection holds the advisory lock",
-            )
-            for board in boards
-        ]
+    """Bounded operator-driven collection for both boards (no scheduler).
+
+    Advisory locking is per board inside :func:`ingest_board_monthly_revenue`
+    so each board's transaction holds its lock until that board commits.
+    """
     results: list[BoardIngestResult] = []
     for board in boards:
         results.append(
@@ -157,6 +150,22 @@ def ingest_board_monthly_revenue(
 ) -> BoardIngestResult:
     if board not in BOARD_ENDPOINTS:
         raise ValueError(f"unsupported board: {board}")
+    # Acquire first so the lock covers get_last_accepted…commit for this board.
+    if not _try_collect_advisory_lock(session, board=board):
+        session.rollback()
+        return BoardIngestResult(
+            board=board,
+            outcome="skipped_locked",
+            validation_status="skipped_locked",
+            reporting_period_yyyymm=None,
+            row_count=None,
+            raw_fetch_id=None,
+            stats={},
+            errors=["advisory_lock_held"],
+            error_message=(
+                f"Another monthly-revenue collection holds the {board} advisory lock"
+            ),
+        )
     source, url = BOARD_ENDPOINTS[board]
     now = now or datetime.now(timezone.utc)
     last_accepted = repo.get_last_accepted_raw_fetch(session, board=board)
@@ -450,15 +459,18 @@ def ingest_board_monthly_revenue(
     )
 
 
-def _try_collect_advisory_lock(session: Session) -> bool:
-    """PostgreSQL transaction-scoped advisory lock; no-op success on SQLite."""
+def _try_collect_advisory_lock(session: Session, *, board: str) -> bool:
+    """PostgreSQL transaction-scoped per-board advisory lock; no-op on SQLite."""
     bind = session.get_bind()
     dialect = getattr(getattr(bind, "dialect", None), "name", None)
     if dialect != "postgresql":
         return True
+    key = _BOARD_ADVISORY_LOCK_KEYS.get(board)
+    if key is None:
+        raise ValueError(f"unsupported board for advisory lock: {board}")
     result = session.execute(
         text("SELECT pg_try_advisory_xact_lock(:key)"),
-        {"key": _COLLECT_ADVISORY_LOCK_KEY},
+        {"key": key},
     )
     return bool(result.scalar())
 

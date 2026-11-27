@@ -408,13 +408,20 @@ def test_tw_insights_endpoint_only_allows_tw_stocks(monkeypatch, client) -> None
         "get_tw_stock_insights",
         lambda stock: {
             "revenue": {
-                "lastUpdated": "2026-04-01T10:00:00+08:00",
+                "status": "ok",
+                "reason": None,
+                "source": "official_monthly_revenue:TWSE",
+                "reportingPeriod": "2026-10",
+                "reportGeneratedDate": "2026-11-17",
+                "retrievedAt": "2026-11-27T10:14:11Z",
+                "lastUpdated": "2026-11-27T10:14:11Z",
                 "latestRevenueK": 1000,
                 "latestMomPercent": 1.2,
                 "latestYoyPercent": 12.3,
+                "stale": False,
                 "points": [
                     {
-                        "month": "2026/03",
+                        "month": "2026/10",
                         "revenueK": 1000,
                         "momPercent": 1.2,
                         "yoyPercent": 12.3,
@@ -439,17 +446,11 @@ def test_tw_insights_endpoint_only_allows_tw_stocks(monkeypatch, client) -> None
                 "topMovers": [],
             },
             "dividends": {
-                "avgCashYield2Y": 2.1,
-                "years": [
-                    {
-                        "year": 2025,
-                        "cashDividend": 4.0,
-                        "stockDividend": 0.0,
-                        "cashYieldPercent": 2.1,
-                        "exDividendDate": "2026-06-20",
-                        "payDate": "2026-07-18",
-                    }
-                ],
+                "status": "unavailable",
+                "reason": "official_dividend_history_not_collected",
+                "source": None,
+                "avgCashYield2Y": None,
+                "years": [],
             },
         },
     )

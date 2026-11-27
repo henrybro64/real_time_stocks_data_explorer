@@ -84,6 +84,11 @@ def test_build_fundamental_outlook_tw_revenue_trend_and_soft_fail() -> None:
     def fake_insights(_stock):
         return {
             "revenue": {
+                "status": "ok",
+                "reason": None,
+                "source": "official_monthly_revenue:TWSE",
+                "reportingPeriod": "2026-03",
+                "stale": False,
                 "latestRevenueK": 1000,
                 "latestMomPercent": 2.0,
                 "latestYoyPercent": 10.0,
@@ -93,7 +98,30 @@ def test_build_fundamental_outlook_tw_revenue_trend_and_soft_fail() -> None:
                     {"month": "2026/03", "revenueK": 1000, "momPercent": 3.0, "yoyPercent": 10.0},
                 ],
             },
-            "dividends": {"avgCashYield2Y": 1.5, "years": [{}, {}]},
+            "dividends": {
+                "status": "ok",
+                "reason": None,
+                "source": "test_fixture",
+                "avgCashYield2Y": 1.5,
+                "years": [
+                    {
+                        "year": 2025,
+                        "cashDividend": 1.0,
+                        "stockDividend": 0.0,
+                        "cashYieldPercent": 1.5,
+                        "exDividendDate": None,
+                        "payDate": None,
+                    },
+                    {
+                        "year": 2024,
+                        "cashDividend": 1.0,
+                        "stockDividend": 0.0,
+                        "cashYieldPercent": 1.5,
+                        "exDividendDate": None,
+                        "payDate": None,
+                    },
+                ],
+            },
             "peer": {"sector": "Semi", "asOf": "2026-03-01", "companyCount": 10},
         }
 

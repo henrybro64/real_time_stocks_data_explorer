@@ -612,6 +612,7 @@ const E2E_TW_INSIGHTS = {
     latestRevenueK: 1_000,
     latestMomPercent: 1.2,
     latestYoyPercent: 3.4,
+    stale: false,
     points: [{ month: "2026/10", revenueK: 1_000, momPercent: 1.2, yoyPercent: 3.4 }],
   },
   peer: {
