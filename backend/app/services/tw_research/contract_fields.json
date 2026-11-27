@@ -217,15 +217,15 @@
   },
   {
     "field": "monthly_revenue_yoy_mom",
-    "source": "none (tw_insights revenue is SYNTHETIC — forbidden)",
+    "source": "TWSE openapi t187ap05_L / TPEx openapi mopsfin_t187ap05_O (stored)",
     "freshness_class": "monthly_closed_month",
-    "validation": "requires real MOPS/official monthly revenue adapter",
-    "missing": true,
-    "status": "not_implemented",
+    "validation": "accepted market-wide snapshot; missing collection stays unavailable",
+    "missing": false,
+    "status": "implemented",
     "required": false,
     "unit": "percent",
-    "sector_applicability": "non_financial preferred; financials need sector-aware handling",
-    "implementation_notes": "Never use TW_INSIGHTS_REVENUE_IS_SYNTHETIC placeholders."
+    "sector_applicability": "all industries (OpenAPI revenue covers financials)",
+    "implementation_notes": "Reads persisted official observations only; never synthesizes. Historical MOPS backfill is out of Milestone 1 scope."
   },
   {
     "field": "gross_operating_net_margins",

@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     JSON,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -917,5 +918,148 @@ class TwResearchExportSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+        nullable=False,
+    )
+
+
+class TwFundamentalRawFetch(Base):
+    """Raw official fundamentals response with request lineage (#362 M1)."""
+
+    __tablename__ = "tw_fundamental_raw_fetches"
+    __table_args__ = (
+        Index(
+            "ix_tw_fundamental_raw_fetches_board_dataset_fetched",
+            "board",
+            "dataset",
+            "fetched_at",
+        ),
+        Index(
+            "ix_tw_fundamental_raw_fetches_accepted",
+            "board",
+            "dataset",
+            "validation_status",
+            "fetched_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    dataset: Mapped[str] = mapped_column(String(64), nullable=False)
+    board: Mapped[str] = mapped_column(String(8), nullable=False)
+    endpoint_url: Mapped[str] = mapped_column(Text, nullable=False)
+    request_method: Mapped[str] = mapped_column(String(8), nullable=False)
+    request_headers_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    http_status: Mapped[int | None] = mapped_column(nullable=True)
+    etag: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    last_modified: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    body_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    body_bytes: Mapped[int | None] = mapped_column(nullable=True)
+    raw_body: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    body_ref_fetch_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "tw_fundamental_raw_fetches.id",
+            name="fk_tw_fundamental_raw_fetches_body_ref",
+        ),
+        nullable=True,
+    )
+    reporting_period_yyyymm: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    report_generated_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    parser_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    validation_errors_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    row_count: Mapped[int | None] = mapped_column(nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class TwMonthlyRevenueObservation(Base):
+    """Latest accepted official monthly revenue observation per stock/period (#362 M1)."""
+
+    __tablename__ = "tw_monthly_revenue_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "stock_id",
+            "period_yyyymm",
+            "basis",
+            name="uq_tw_monthly_revenue_stock_period_basis",
+        ),
+        Index(
+            "ix_tw_monthly_revenue_board_period",
+            "board",
+            "period_yyyymm",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    board: Mapped[str] = mapped_column(String(8), nullable=False)
+    company_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    company_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    period_yyyymm: Mapped[str] = mapped_column(String(6), nullable=False)
+    report_generated_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    revenue_nt_thousand: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prev_month_revenue_nt_thousand: Mapped[float | None] = mapped_column(Float, nullable=True)
+    year_ago_revenue_nt_thousand: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mom_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    yoy_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ytd_revenue_nt_thousand: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ytd_year_ago_revenue_nt_thousand: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ytd_yoy_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    missing_fields_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    value_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_fetch_id: Mapped[int] = mapped_column(
+        ForeignKey("tw_fundamental_raw_fetches.id", name="fk_tw_monthly_revenue_obs_raw_fetch"),
+        nullable=False,
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+
+
+class TwMonthlyRevenueRevision(Base):
+    """Preserved observation change when an accepted dataset revises values (#362 M1)."""
+
+    __tablename__ = "tw_monthly_revenue_revisions"
+    __table_args__ = (
+        Index(
+            "ix_tw_monthly_revenue_revisions_obs_changed",
+            "observation_id",
+            "changed_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    observation_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "tw_monthly_revenue_observations.id",
+            name="fk_tw_monthly_revenue_rev_obs",
+        ),
+        nullable=False,
+    )
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    old_value_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    new_value_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    old_values_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    new_values_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    previous_raw_fetch_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "tw_fundamental_raw_fetches.id",
+            name="fk_tw_monthly_revenue_rev_prev_raw",
+        ),
+        nullable=True,
+    )
+    new_raw_fetch_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "tw_fundamental_raw_fetches.id",
+            name="fk_tw_monthly_revenue_rev_new_raw",
+        ),
         nullable=False,
     )

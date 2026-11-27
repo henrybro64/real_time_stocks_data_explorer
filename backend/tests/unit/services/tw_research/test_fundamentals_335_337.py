@@ -108,16 +108,18 @@ def test_contract_includes_fundamental_audit_fields() -> None:
     fields = {row.field: row for row in contract.fieldMap}
     assert "stock_name" in fields
     assert fields["stock_name"].status == "implemented"
-    assert fields["monthly_revenue_yoy_mom"].missing is True
-    assert fields["monthly_revenue_yoy_mom"].status == "not_implemented"
+    assert fields["monthly_revenue_yoy_mom"].missing is False
+    assert fields["monthly_revenue_yoy_mom"].status == "implemented"
     assert fields["relative_price_basis"].status == "implemented"
     assert fields["ttm_eps_pe_peg"].missing is True
-    assert any("synthetic" in note.lower() for note in contract.notes)
+    assert any("never synthesizes" in note.lower() for note in contract.notes) or any(
+        "mops" in note.lower() for note in contract.notes
+    )
     matrix = load_feasibility_matrix()
     assert len(matrix) >= 10
     by_field = {row["field"]: row for row in matrix}
-    assert by_field["monthly_revenue_yoy_mom"]["implementation"] == "not_implemented"
-    assert "SYNTHETIC" in by_field["monthly_revenue_yoy_mom"]["provider"]
+    assert by_field["monthly_revenue_yoy_mom"]["implementation"] == "implemented"
+    assert "t187ap05" in by_field["monthly_revenue_yoy_mom"]["provider"]
 
 
 def test_relative_price_basis_low_mid_high_and_insufficient() -> None:
@@ -171,7 +173,9 @@ def test_relative_price_basis_is_deterministic() -> None:
     assert first.as_dict() == second.as_dict()
 
 
-def test_first_pass_dedupes_before_collection_and_keeps_names() -> None:
+def test_first_pass_dedupes_before_collection_and_keeps_names(monkeypatch) -> None:
+    # No official monthly-revenue tables in this unit path — stay unavailable.
+    monkeypatch.setattr("app.db.session.SessionLocal", None)
     stock = stock_record(
         "TW:2330",
         market="TW",
@@ -247,7 +251,9 @@ def test_first_pass_dedupes_before_collection_and_keeps_names() -> None:
     assert record.name_status == "ok"
     assert record.fields["official_pe"].status == "ok"
     assert record.fields["monthly_revenue_yoy_mom"].status == "unavailable"
-    assert "synthetic" in (record.fields["monthly_revenue_yoy_mom"].reason or "").lower()
+    assert "official_monthly_revenue_not_collected" in (
+        record.fields["monthly_revenue_yoy_mom"].reason or ""
+    )
     assert record.fields["peg"].status == "unavailable"
     assert record.fields["gross_operating_net_margins"].reason is not None
     assert "not_fetched" in (record.fields["gross_operating_net_margins"].reason or "")

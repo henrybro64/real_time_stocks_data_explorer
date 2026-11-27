@@ -745,6 +745,80 @@ def collect_first_pass_for_universe(
     )
 
 
+def _attach_monthly_revenue_field(
+    scratch: EnrichmentResult,
+    *,
+    stock_id: str,
+    captured_at: str,
+) -> None:
+    """Populate monthly_revenue_yoy_mom from stored official observations only."""
+    if "monthly_revenue_yoy_mom" in scratch.fields:
+        return
+    reason = "official_monthly_revenue_not_collected"
+    source = "tw_official_monthly_revenue"
+    value: dict[str, object] | None = None
+    source_as_of: str | None = None
+    status: Literal["ok", "unavailable"] = "unavailable"
+    try:
+        from app.db.session import SessionLocal
+        from app.services.tw_monthly_revenue.service import get_monthly_revenue_for_stock
+
+        if SessionLocal is not None:
+            with SessionLocal() as session:
+                observation = get_monthly_revenue_for_stock(session, stock_id)
+            if observation is not None:
+                status = "ok"
+                reason = None
+                # Prefer canonical YYYY-MM reporting period for source_as_of.
+                source_as_of = str(observation.get("reportingPeriod") or "") or None
+                if not source_as_of:
+                    yyyymm = str(observation.get("reportingPeriodYyyymm") or "")
+                    if len(yyyymm) == 6 and yyyymm.isdigit():
+                        source_as_of = f"{yyyymm[:4]}-{yyyymm[4:6]}"
+                value = {
+                    "reportingPeriod": observation.get("reportingPeriod"),
+                    "revenueNtThousand": observation.get("revenueNtThousand"),
+                    "momPercent": observation.get("momPercent"),
+                    "yoyPercent": observation.get("yoyPercent"),
+                    "missingFields": observation.get("missingFields") or {},
+                    "stale": bool(observation.get("stale")),
+                }
+    except Exception as exc:  # noqa: BLE001 — keep first-pass honest on DB errors
+        message = str(exc).lower()
+        missing_table = (
+            "no such table" in message
+            or ("relation" in message and "does not exist" in message)
+            or ("table" in message and "does not exist" in message)
+        )
+        if missing_table:
+            # Migration not applied yet — honest gap, not an infrastructure outage.
+            reason = "official_monthly_revenue_not_collected"
+        elif is_infrastructure_failure(exc):
+            # Connection / coordination faults must fail closed for retry eligibility.
+            raise
+        else:
+            reason = f"official_monthly_revenue_read_failed:{type(exc).__name__}"
+            logger.warning(
+                "monthly revenue lookup failed",
+                extra={
+                    "event": "first_pass.monthly_revenue_read_failed",
+                    "stock_id": stock_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+    scratch.fields["monthly_revenue_yoy_mom"] = ProvenanceField(
+        field="monthly_revenue_yoy_mom",
+        status=status,
+        source=source,
+        source_as_of=source_as_of,
+        captured_at=captured_at,
+        freshness_class="monthly_closed_month",
+        reason=reason,
+        value=value,
+    )
+
+
 def _collect_one(  # NOSONAR(S3776, S107) pre-existing collector fan-in; not restructured in #362
     stock_id: str,
     *,
@@ -910,13 +984,9 @@ def _collect_one(  # NOSONAR(S3776, S107) pre-existing collector fan-in; not res
     # Explicit not-implemented / unavailable fundamentals (no fabrication).
     # official_pb / official_dividend_yield may already be set by _enrich_valuation
     # from TWSE BWIBBU / TPEx official daily valuation fields.
+    _attach_monthly_revenue_field(scratch, stock_id=stock.id, captured_at=captured_at)
+
     for field_name, source, freshness_class, reason in (
-        (
-            "monthly_revenue_yoy_mom",
-            "none",
-            "monthly_closed_month",
-            "real_monthly_revenue_adapter_missing;tw_insights_synthetic_forbidden",
-        ),
         (
             "operating_cash_flow",
             "none",

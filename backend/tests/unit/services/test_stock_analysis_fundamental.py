@@ -84,6 +84,11 @@ def test_build_fundamental_outlook_tw_revenue_trend_and_soft_fail() -> None:
     def fake_insights(_stock):
         return {
             "revenue": {
+                "status": "ok",
+                "reason": None,
+                "source": "official_monthly_revenue:TWSE",
+                "reportingPeriod": "2026-03",
+                "stale": False,
                 "latestRevenueK": 1000,
                 "latestMomPercent": 2.0,
                 "latestYoyPercent": 10.0,
@@ -93,7 +98,30 @@ def test_build_fundamental_outlook_tw_revenue_trend_and_soft_fail() -> None:
                     {"month": "2026/03", "revenueK": 1000, "momPercent": 3.0, "yoyPercent": 10.0},
                 ],
             },
-            "dividends": {"avgCashYield2Y": 1.5, "years": [{}, {}]},
+            "dividends": {
+                "status": "ok",
+                "reason": None,
+                "source": "test_fixture",
+                "avgCashYield2Y": 1.5,
+                "years": [
+                    {
+                        "year": 2025,
+                        "cashDividend": 1.0,
+                        "stockDividend": 0.0,
+                        "cashYieldPercent": 1.5,
+                        "exDividendDate": None,
+                        "payDate": None,
+                    },
+                    {
+                        "year": 2024,
+                        "cashDividend": 1.0,
+                        "stockDividend": 0.0,
+                        "cashYieldPercent": 1.5,
+                        "exDividendDate": None,
+                        "payDate": None,
+                    },
+                ],
+            },
             "peer": {"sector": "Semi", "asOf": "2026-03-01", "companyCount": 10},
         }
 
@@ -117,7 +145,7 @@ def test_build_fundamental_outlook_tw_revenue_trend_and_soft_fail() -> None:
     assert failed["trailingPe"] == 20.0
 
 
-def test_placeholder_tw_insights_never_reach_the_payload() -> None:
+def test_uncollected_official_tw_insights_do_not_fabricate_revenue(monkeypatch) -> None:
     stock = stock_record(
         "TW:2330",
         market="TW",
@@ -128,16 +156,17 @@ def test_placeholder_tw_insights_never_reach_the_payload() -> None:
         timezone="Asia/Taipei",
     )
 
-    # No loader injected, so the real (still synthetic) TW insights source applies.
+    monkeypatch.setattr(
+        "app.services.tw_insights_service._fetch_yahoo_compare",
+        lambda _stock: None,
+    )
+    monkeypatch.setattr("app.db.session.SessionLocal", None)
+
     payload = build_fundamental_outlook(stock, {"trailingPE": 20.0, "forwardPE": 18.0})
 
     assert payload["revenueTrend"] is None
     assert payload["dividendSummary"] is None
-    assert payload["peerContext"] is None
-    assert payload["sources"] == ["yfinance.info"]
-    assert payload["twInsightsUnavailableReason"] == "tw_insights_source_is_placeholder_data"
-    for key in ("monthlyRevenueTrend", "dividendTrend", "peerContext"):
-        assert key in payload["missingInputs"]
+    assert "monthlyRevenueTrend" in payload["missingInputs"]
     assert not any("Revenue" in factor for factor in payload["positiveFactors"])
     # Fundamental gaps must not block the rest of the payload.
     assert payload["trailingPe"] == 20.0

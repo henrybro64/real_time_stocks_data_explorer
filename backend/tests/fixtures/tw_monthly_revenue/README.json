@@ -1,0 +1,25 @@
+{
+  "twse": {
+    "label": "twse_rev",
+    "retrieved_at_utc": "2026-11-27T10:14:11.551Z",
+    "method": "GET",
+    "url": "https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+    "curl_exit": "rc=0",
+    "http_status_time_bytes_type": "200 0.391545 93620 application/json",
+    "body_bytes_saved": 611239,
+    "body_sha256": "207a141d007bd0d37f1313bfdf09ee0b63b64d55ae04913e6112b1cc54e97edf",
+    "selected_headers": "date: Fri, 27 Nov 2026 10:14:11 GMT|last-modified: Thu, 26 Nov 2026 21:24:42 GMT|etag: W/\"6b08a39a-953a7\""
+  },
+  "tpex": {
+    "label": "tpex_rev",
+    "retrieved_at_utc": "2026-11-27T10:14:13.464Z",
+    "method": "GET",
+    "url": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O",
+    "curl_exit": "rc=0",
+    "http_status_time_bytes_type": "200 0.455187 502825 application/json",
+    "body_bytes_saved": 502825,
+    "body_sha256": "f82dba0024abefd90f4942d796ad25f375728dc09cb8584b885544ea7b7cbff0",
+    "selected_headers": "Date: Fri, 27 Nov 2026 10:14:13 GMT|Last-Modified: Fri, 27 Nov 2026 10:11:36 GMT|ETag: \"6b095758-7ac29\"|Cache-Control: no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+  },
+  "note": "Padded from feasibility abbreviated samples for offline tests; live endpoints not used."
+}

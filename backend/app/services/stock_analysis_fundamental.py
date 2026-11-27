@@ -279,6 +279,8 @@ def _summarize_tw_revenue(insights: dict[str, object]) -> dict[str, object] | No
     revenue = insights.get("revenue")
     if not isinstance(revenue, dict):
         return None
+    if revenue.get("status") == "unavailable":
+        return None
     points = revenue.get("points")
     if not isinstance(points, list) or not points:
         return None
@@ -318,11 +320,15 @@ def _summarize_tw_dividends(insights: dict[str, object]) -> dict[str, object] | 
     dividends = insights.get("dividends")
     if not isinstance(dividends, dict):
         return None
+    if dividends.get("status") == "unavailable":
+        return None
     years = dividends.get("years")
+    if not isinstance(years, list) or not years:
+        return None
     return {
         "kind": "historical_dividends",
         "avgCashYield2Y": _coerce_float(dividends.get("avgCashYield2Y")),
-        "yearCount": len(years) if isinstance(years, list) else 0,
+        "yearCount": len(years),
     }
 
 

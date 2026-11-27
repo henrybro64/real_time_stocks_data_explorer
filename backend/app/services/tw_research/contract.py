@@ -60,6 +60,10 @@ def build_research_contract() -> ResearchContractResponse:
             "Stock Ticker publishes independently; it does not track consumer acknowledgment or write Notion.",
             "Home-node CPU/RSS/disk measurements belong to the manual pilot (#315); code ships "
             "provisional unit benchmarks and a measurement worksheet only.",
-            "tw_insights monthly revenue is synthetic and must never be treated as reported fundamentals.",
+            "Official monthly revenue (Issue #362 M1) persists TWSE/TPEx latest-month "
+            "OpenAPI snapshots and never synthesizes missing values as zero.",
+            "Issue #362 M1 note: an in-flight first-pass run's first ~13 rows may retain "
+            "the prior adapter-missing reason for monthly_revenue_yoy_mom until those "
+            "symbols are collected again against stored official observations.",
         ],
     )
