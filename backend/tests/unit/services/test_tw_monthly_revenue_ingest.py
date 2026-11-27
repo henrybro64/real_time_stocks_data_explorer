@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -14,6 +17,7 @@ from app.db.models import (
     TwMonthlyRevenueObservation,
     TwMonthlyRevenueRevision,
 )
+from app.services import http_client as http_client_module
 from app.services.http_client import HttpResponseMeta
 from app.services.tw_insights_service import (
     TW_INSIGHTS_DIVIDENDS_ARE_SYNTHETIC,
@@ -24,6 +28,7 @@ from app.services.tw_monthly_revenue.service import (
     collect_latest_monthly_revenue,
     get_monthly_revenue_for_stock,
     ingest_board_monthly_revenue,
+    observation_period_is_stale,
 )
 from app.services.tw_research.first_pass import _attach_monthly_revenue_field
 from app.services.tw_research.enrichment import EnrichmentResult
@@ -92,11 +97,38 @@ def test_ingest_both_boards_idempotent_and_revision(session_factory) -> None:
         first_count = session.execute(select(func.count()).select_from(TwMonthlyRevenueObservation)).scalar_one()
         assert first_count >= 820 + 620
 
-        # Identical repeat → unchanged, no revisions.
+        first_twse = session.execute(
+            select(TwFundamentalRawFetch)
+            .where(
+                TwFundamentalRawFetch.board == "TWSE",
+                TwFundamentalRawFetch.validation_status == "accepted",
+            )
+            .order_by(TwFundamentalRawFetch.id.asc())
+        ).scalars().first()
+        assert first_twse is not None
+        assert first_twse.raw_body is not None
+
+        # Identical repeat → body dedupe + unchanged observations, no revisions.
         results2 = collect_latest_monthly_revenue(session, fetch_fn=fetch)
         assert all(item.outcome == "accepted" for item in results2)
         assert all(item.stats.get("revised", 0) == 0 for item in results2)
         assert session.execute(select(func.count()).select_from(TwMonthlyRevenueRevision)).scalar_one() == 0
+        second_twse = session.execute(
+            select(TwFundamentalRawFetch)
+            .where(
+                TwFundamentalRawFetch.board == "TWSE",
+                TwFundamentalRawFetch.validation_status == "accepted",
+            )
+            .order_by(TwFundamentalRawFetch.id.desc())
+        ).scalars().first()
+        assert second_twse is not None
+        assert second_twse.id != first_twse.id
+        assert second_twse.raw_body is None
+        assert second_twse.body_ref_fetch_id == first_twse.id
+        assert (
+            session.execute(select(func.count()).select_from(TwMonthlyRevenueObservation)).scalar_one()
+            == first_count
+        )
 
         # Changed value for 2330 → revision preserved.
         payload = json.loads(twse_body.decode("utf-8"))
@@ -129,6 +161,34 @@ def test_ingest_both_boards_idempotent_and_revision(session_factory) -> None:
         obs = get_monthly_revenue_for_stock(session, "TW:2330")
         assert obs is not None
         assert obs["revenueNtThousand"] == 999999999.0
+
+
+def test_identical_200_bodies_dedupe_raw_storage(session_factory) -> None:
+    twse_body = _body("twse_latest_month.json")
+    fetch = _fetch_factory(
+        {
+            "t187ap05_L": HttpResponseMeta(
+                status_code=200,
+                headers={"etag": 'W/"same"'},
+                content=twse_body,
+                url="https://openapi.twse.com.tw/v1/opendata/t187ap05_L",
+            )
+        }
+    )
+    with session_factory() as session:
+        first = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=fetch)
+        second = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=fetch)
+        assert first.outcome == "accepted"
+        assert second.outcome == "accepted"
+        first_row = session.get(TwFundamentalRawFetch, first.raw_fetch_id)
+        second_row = session.get(TwFundamentalRawFetch, second.raw_fetch_id)
+        assert first_row is not None and second_row is not None
+        assert first_row.raw_body is not None
+        assert second_row.raw_body is None
+        assert second_row.body_ref_fetch_id == first_row.id
+        assert second_row.body_sha256 == first_row.body_sha256
+        count = session.execute(select(func.count()).select_from(TwMonthlyRevenueObservation)).scalar_one()
+        assert count == first.row_count == second.row_count
 
 
 def test_rejected_incomplete_keeps_last_valid(session_factory) -> None:
@@ -218,6 +278,50 @@ def test_conditional_sent_only_with_accepted_cache(session_factory) -> None:
         assert seen_headers[1].get("If-None-Match") == 'W/"cached"'
 
 
+def test_real_path_304_not_modified_via_mock_transport(session_factory, monkeypatch) -> None:
+    twse_body = _body("twse_latest_month.json")
+    state = {"phase": "first"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if state["phase"] == "first":
+            return httpx.Response(
+                200,
+                headers={"etag": 'W/"live-cache"', "content-type": "application/json"},
+                content=twse_body,
+                request=request,
+            )
+        assert request.headers.get("if-none-match") == 'W/"live-cache"'
+        return httpx.Response(
+            304,
+            headers={"etag": 'W/"live-cache"'},
+            content=b"",
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    monkeypatch.setattr(http_client_module, "_shared_client", client)
+
+    with session_factory() as session:
+        first = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=None)
+        assert first.outcome == "accepted"
+        state["phase"] = "second"
+        second = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=None)
+        assert second.outcome == "not_modified"
+
+
+def test_real_path_500_still_fetch_failed(session_factory, monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"nope", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    monkeypatch.setattr(http_client_module, "_shared_client", client)
+
+    with session_factory() as session:
+        result = ingest_board_monthly_revenue(session, board="TWSE", fetch_fn=None)
+        assert result.outcome == "fetch_failed"
+        assert result.validation_status == "fetch_failed"
+
+
 def test_insights_and_first_pass_use_stored_official_data(session_factory, monkeypatch) -> None:
     assert TW_INSIGHTS_REVENUE_IS_SYNTHETIC is False
     assert TW_INSIGHTS_DIVIDENDS_ARE_SYNTHETIC is False
@@ -252,6 +356,7 @@ def test_insights_and_first_pass_use_stored_official_data(session_factory, monke
     insights = get_tw_stock_insights(stock)
     assert insights["revenue"]["status"] == "ok"
     assert insights["revenue"]["latestRevenueK"] == 586890319
+    assert insights["revenue"]["stale"] is False
     assert len(insights["revenue"]["points"]) == 1  # no fabricated multi-month trend
     assert insights["dividends"]["status"] == "unavailable"
     assert insights["dividends"]["years"] == []
@@ -272,5 +377,12 @@ def test_insights_and_first_pass_use_stored_official_data(session_factory, monke
     _attach_monthly_revenue_field(scratch, stock_id="TW:2330", captured_at="2026-11-27T00:00:00Z")
     field = scratch.fields["monthly_revenue_yoy_mom"]
     assert field.status == "ok"
-    assert field.source_as_of == "202610"
+    assert field.source_as_of == "2026-10"
     assert field.value["momPercent"] is not None
+
+
+def test_observation_stale_flag_uses_taipei_calendar_months() -> None:
+    now = datetime(2026, 11, 27, tzinfo=ZoneInfo("Asia/Taipei"))
+    assert observation_period_is_stale("202610", now=now) is False  # 1 month behind
+    assert observation_period_is_stale("202609", now=now) is False  # 2 months behind
+    assert observation_period_is_stale("202608", now=now) is True  # 3 months behind

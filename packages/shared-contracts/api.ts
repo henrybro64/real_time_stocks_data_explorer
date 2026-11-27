@@ -681,6 +681,8 @@ export type TWRevenueInsight = {
   latestRevenueK: number | null;
   latestMomPercent: number | null;
   latestYoyPercent: number | null;
+  /** True when the reporting period is more than 2 calendar months behind Asia/Taipei. */
+  stale?: boolean;
   points: TWRevenuePoint[];
 };
 

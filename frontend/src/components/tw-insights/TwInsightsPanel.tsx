@@ -89,6 +89,9 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
               {insights.revenue.reportingPeriod
                 ? ` · ${insights.revenue.reportingPeriod}`
                 : null}
+              {insights.revenue.stale ? (
+                <span data-testid="tw-insights-revenue-stale"> · {t("twInsights.revenue.stale")}</span>
+              ) : null}
             </p>
             {revenuePoints.length > 1 ? (
               <div className="app-tw-revenue-bars">
@@ -132,28 +135,65 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
             </a>
           </p>
         ) : null}
-        <Table size="sm" useZebraStyles>
-          <TableHead>
-            <TableRow>
-              <TableHeader>{t("twInsights.peer.period")}</TableHeader>
-              <TableHeader>{t("twInsights.peer.company")}</TableHeader>
-              <TableHeader>{t("twInsights.peer.industry")}</TableHeader>
-              <TableHeader>{t("twInsights.peer.rank")}</TableHeader>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {insights.peer.metrics.map((metric) => (
-              <TableRow key={metric.period}>
-                <TableCell>{metric.label}</TableCell>
-                <TableCell>{formatSignedPercent(metric.companyPercent)}</TableCell>
-                <TableCell>{formatSignedPercent(metric.industryAveragePercent)}</TableCell>
-                <TableCell>
-                  {metric.rank}/{metric.total}
-                </TableCell>
+        {insights.peer.metrics.length > 0 ? (
+          <Table size="sm" useZebraStyles>
+            <TableHead>
+              <TableRow>
+                <TableHeader>{t("twInsights.peer.period")}</TableHeader>
+                <TableHeader>{t("twInsights.peer.company")}</TableHeader>
+                <TableHeader>{t("twInsights.peer.industry")}</TableHeader>
+                <TableHeader>{t("twInsights.peer.rank")}</TableHeader>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {insights.peer.metrics.map((metric) => (
+                <TableRow key={metric.period}>
+                  <TableCell>{metric.label}</TableCell>
+                  <TableCell>{formatSignedPercent(metric.companyPercent)}</TableCell>
+                  <TableCell>{formatSignedPercent(metric.industryAveragePercent)}</TableCell>
+                  <TableCell>
+                    {metric.rank}/{metric.total}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="app-supporting-copy" data-testid="tw-insights-peer-metrics-unavailable">
+            {t("twInsights.peer.metricsUnavailable")}
+          </p>
+        )}
+        {insights.peer.topMovers.length > 0 ? (
+          <>
+            <h4 className="app-tw-subtitle">Industry movers (1M/3M/6M/1Y)</h4>
+            <Table size="sm" useZebraStyles data-testid="tw-insights-industry-movers">
+              <TableHead>
+                <TableRow>
+                  <TableHeader>#</TableHeader>
+                  <TableHeader>Company</TableHeader>
+                  <TableHeader>Symbol</TableHeader>
+                  <TableHeader>1M</TableHeader>
+                  <TableHeader>3M</TableHeader>
+                  <TableHeader>6M</TableHeader>
+                  <TableHeader>1Y</TableHeader>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {insights.peer.topMovers.map((item) => (
+                  <TableRow key={`${item.rank}-${item.symbol}`}>
+                    <TableCell>{item.rank}</TableCell>
+                    <TableCell>{item.name}</TableCell>
+                    <TableCell>{item.symbol}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change1mPercent)}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change3mPercent)}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change6mPercent)}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change1yPercent)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </>
+        ) : null}
       </section>
 
       <section className="app-tw-block">

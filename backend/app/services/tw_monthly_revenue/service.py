@@ -12,7 +12,9 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Callable
+from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.repositories import tw_monthly_revenue_repository as repo
@@ -23,7 +25,7 @@ from app.services.http_client import (
 )
 from app.services.tw_monthly_revenue.parse import (
     PARSER_VERSION,
-    parse_revenue_dataset,
+    parse_revenue_dataset_detailed,
 )
 from app.services.tw_monthly_revenue.validate import validate_revenue_dataset
 
@@ -44,6 +46,10 @@ _PROVIDER_NAMES = {
     "TWSE": "twse_openapi",
     "TPEx": "tpex",
 }
+# Stable 64-bit key for pg_try_advisory_xact_lock (Issue #362 M1 collect).
+_COLLECT_ADVISORY_LOCK_KEY = 362_000_001
+_TAIPEI = ZoneInfo("Asia/Taipei")
+_STALE_MONTHS = 2
 
 FetchFn = Callable[..., HttpResponseMeta]
 
@@ -59,6 +65,25 @@ class BoardIngestResult:
     stats: dict[str, int]
     errors: list[str]
     error_message: str | None = None
+
+
+def observation_period_is_stale(
+    period_yyyymm: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True when the observation period is more than 2 calendar months behind Asia/Taipei."""
+    text_period = str(period_yyyymm or "").strip()
+    if len(text_period) != 6 or not text_period.isdigit():
+        return False
+    year = int(text_period[:4])
+    month = int(text_period[4:6])
+    if month < 1 or month > 12:
+        return False
+    current = now.astimezone(_TAIPEI) if now is not None else datetime.now(_TAIPEI)
+    current_index = current.year * 12 + (current.month - 1)
+    period_index = year * 12 + (month - 1)
+    return (current_index - period_index) > _STALE_MONTHS
 
 
 def get_monthly_revenue_for_stock(session: Session, stock_id: str) -> dict[str, object] | None:
@@ -89,6 +114,7 @@ def get_monthly_revenue_for_stock(session: Session, stock_id: str) -> dict[str, 
         "missingFields": dict(row.missing_fields_json or {}),
         "lastSeenAt": row.last_seen_at.isoformat() if row.last_seen_at else None,
         "rawFetchId": row.raw_fetch_id,
+        "stale": observation_period_is_stale(row.period_yyyymm),
     }
 
 
@@ -99,6 +125,21 @@ def collect_latest_monthly_revenue(
     fetch_fn: FetchFn | None = None,
 ) -> list[BoardIngestResult]:
     """Bounded operator-driven collection for both boards (no scheduler)."""
+    if not _try_collect_advisory_lock(session):
+        return [
+            BoardIngestResult(
+                board=board,
+                outcome="skipped_locked",
+                validation_status="skipped_locked",
+                reporting_period_yyyymm=None,
+                row_count=None,
+                raw_fetch_id=None,
+                stats={},
+                errors=["advisory_lock_held"],
+                error_message="Another monthly-revenue collection holds the advisory lock",
+            )
+            for board in boards
+        ]
     results: list[BoardIngestResult] = []
     for board in boards:
         results.append(
@@ -119,13 +160,15 @@ def ingest_board_monthly_revenue(
     source, url = BOARD_ENDPOINTS[board]
     now = now or datetime.now(timezone.utc)
     last_accepted = repo.get_last_accepted_raw_fetch(session, board=board)
+    last_accepted_body = repo.resolve_raw_body(session, last_accepted)
+    last_accepted_etag = repo.resolve_etag(session, last_accepted)
     request_headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": "real-time-stocks-official-monthly-revenue/1.0",
     }
     # Conditional GET only when an accepted cached body exists.
-    if last_accepted is not None and last_accepted.raw_body is not None and last_accepted.etag:
-        request_headers["If-None-Match"] = last_accepted.etag
+    if last_accepted is not None and last_accepted_body is not None and last_accepted_etag:
+        request_headers["If-None-Match"] = last_accepted_etag
 
     fetcher = fetch_fn or _default_fetch
     try:
@@ -178,7 +221,7 @@ def ingest_board_monthly_revenue(
         )
 
     if response.status_code == 304:
-        if last_accepted is None or last_accepted.raw_body is None:
+        if last_accepted is None or last_accepted_body is None:
             raw = repo.create_raw_fetch(
                 session,
                 source=source,
@@ -222,11 +265,12 @@ def ingest_board_monthly_revenue(
             request_headers=request_headers,
             fetched_at=now,
             http_status=304,
-            etag=last_accepted.etag,
+            etag=last_accepted_etag or last_accepted.etag,
             last_modified=last_accepted.last_modified,
             body_sha256=last_accepted.body_sha256,
             body_bytes=last_accepted.body_bytes,
             raw_body=None,
+            body_ref_fetch_id=last_accepted.body_ref_fetch_id or last_accepted.id,
             reporting_period_yyyymm=last_accepted.reporting_period_yyyymm,
             report_generated_date=last_accepted.report_generated_date,
             parser_version=PARSER_VERSION,
@@ -249,6 +293,13 @@ def ingest_board_monthly_revenue(
 
     body = response.content
     sha256 = hashlib.sha256(body).hexdigest()
+    prior_body = repo.find_prior_body_fetch(session, board=board, body_sha256=sha256)
+    store_body: bytes | None = body
+    body_ref_fetch_id: int | None = None
+    if prior_body is not None:
+        store_body = None
+        body_ref_fetch_id = prior_body.id
+
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -265,7 +316,8 @@ def ingest_board_monthly_revenue(
             last_modified=_header(response, "last-modified"),
             body_sha256=sha256,
             body_bytes=len(body),
-            raw_body=body,
+            raw_body=store_body,
+            body_ref_fetch_id=body_ref_fetch_id,
             reporting_period_yyyymm=None,
             report_generated_date=None,
             parser_version=PARSER_VERSION,
@@ -287,12 +339,15 @@ def ingest_board_monthly_revenue(
             error_message=str(exc)[:500],
         )
 
-    rows, parse_errors = parse_revenue_dataset(payload, board=board)
+    parsed = parse_revenue_dataset_detailed(payload, board=board)
     validation = validate_revenue_dataset(
-        rows,
+        parsed.rows,
         board=board,
-        parse_errors=parse_errors,
+        row_rejects=parsed.row_rejects,
+        row_warnings=parsed.row_warnings,
+        dataset_errors=parsed.dataset_errors,
         prior_accepted_row_count=last_accepted.row_count if last_accepted else None,
+        payload_total_rows=parsed.payload_total_rows,
     )
     report_generated = (
         date.fromisoformat(validation.report_generated_date_iso)
@@ -315,7 +370,8 @@ def ingest_board_monthly_revenue(
             last_modified=_header(response, "last-modified"),
             body_sha256=sha256,
             body_bytes=len(body),
-            raw_body=body,
+            raw_body=store_body,
+            body_ref_fetch_id=body_ref_fetch_id,
             reporting_period_yyyymm=validation.reporting_period_yyyymm,
             report_generated_date=report_generated,
             parser_version=PARSER_VERSION,
@@ -351,12 +407,13 @@ def ingest_board_monthly_revenue(
         last_modified=_header(response, "last-modified"),
         body_sha256=sha256,
         body_bytes=len(body),
-        raw_body=body,
+        raw_body=store_body,
+        body_ref_fetch_id=body_ref_fetch_id,
         reporting_period_yyyymm=validation.reporting_period_yyyymm,
         report_generated_date=report_generated,
         parser_version=PARSER_VERSION,
         validation_status="accepted",
-        validation_errors=[],
+        validation_errors=validation.errors,
         row_count=validation.row_count,
         error_message=None,
     )
@@ -364,7 +421,7 @@ def ingest_board_monthly_revenue(
         session,
         board=board,
         raw_fetch=raw,
-        rows=rows,
+        rows=validation.accepted_rows,
         now=now,
     )
     session.commit()
@@ -377,6 +434,8 @@ def ingest_board_monthly_revenue(
             "row_count": validation.row_count,
             "stats": stats,
             "raw_fetch_id": raw.id,
+            "body_ref_fetch_id": body_ref_fetch_id,
+            "row_rejects_total": validation.row_rejects_total,
         },
     )
     return BoardIngestResult(
@@ -387,8 +446,21 @@ def ingest_board_monthly_revenue(
         row_count=validation.row_count,
         raw_fetch_id=raw.id,
         stats=stats,
-        errors=[],
+        errors=validation.errors,
     )
+
+
+def _try_collect_advisory_lock(session: Session) -> bool:
+    """PostgreSQL transaction-scoped advisory lock; no-op success on SQLite."""
+    bind = session.get_bind()
+    dialect = getattr(getattr(bind, "dialect", None), "name", None)
+    if dialect != "postgresql":
+        return True
+    result = session.execute(
+        text("SELECT pg_try_advisory_xact_lock(:key)"),
+        {"key": _COLLECT_ADVISORY_LOCK_KEY},
+    )
+    return bool(result.scalar())
 
 
 def _default_fetch(url: str, **kwargs: object) -> HttpResponseMeta:

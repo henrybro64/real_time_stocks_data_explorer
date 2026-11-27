@@ -769,13 +769,19 @@ def _attach_monthly_revenue_field(
             if observation is not None:
                 status = "ok"
                 reason = None
-                source_as_of = str(observation.get("reportingPeriodYyyymm") or "") or None
+                # Prefer canonical YYYY-MM reporting period for source_as_of.
+                source_as_of = str(observation.get("reportingPeriod") or "") or None
+                if not source_as_of:
+                    yyyymm = str(observation.get("reportingPeriodYyyymm") or "")
+                    if len(yyyymm) == 6 and yyyymm.isdigit():
+                        source_as_of = f"{yyyymm[:4]}-{yyyymm[4:6]}"
                 value = {
                     "reportingPeriod": observation.get("reportingPeriod"),
                     "revenueNtThousand": observation.get("revenueNtThousand"),
                     "momPercent": observation.get("momPercent"),
                     "yoyPercent": observation.get("yoyPercent"),
                     "missingFields": observation.get("missingFields") or {},
+                    "stale": bool(observation.get("stale")),
                 }
     except Exception as exc:  # noqa: BLE001 — keep first-pass honest on DB errors
         message = str(exc).lower()

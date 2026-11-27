@@ -62,5 +62,8 @@ def build_research_contract() -> ResearchContractResponse:
             "provisional unit benchmarks and a measurement worksheet only.",
             "Official monthly revenue (Issue #362 M1) persists TWSE/TPEx latest-month "
             "OpenAPI snapshots and never synthesizes missing values as zero.",
+            "Issue #362 M1 note: an in-flight first-pass run's first ~13 rows may retain "
+            "the prior adapter-missing reason for monthly_revenue_yoy_mom until those "
+            "symbols are collected again against stored official observations.",
         ],
     )

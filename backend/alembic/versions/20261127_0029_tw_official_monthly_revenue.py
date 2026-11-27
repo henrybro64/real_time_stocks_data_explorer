@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column("body_sha256", sa.String(length=64), nullable=True),
         sa.Column("body_bytes", sa.Integer(), nullable=True),
         sa.Column("raw_body", sa.LargeBinary(), nullable=True),
+        sa.Column("body_ref_fetch_id", sa.Integer(), nullable=True),
         sa.Column("reporting_period_yyyymm", sa.String(length=6), nullable=True),
         sa.Column("report_generated_date", sa.Date(), nullable=True),
         sa.Column("parser_version", sa.String(length=32), nullable=False),
@@ -46,6 +47,11 @@ def upgrade() -> None:
             sa.DateTime(timezone=True),
             server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["body_ref_fetch_id"],
+            ["tw_fundamental_raw_fetches.id"],
+            name="fk_tw_fundamental_raw_fetches_body_ref",
         ),
         sa.PrimaryKeyConstraint("id"),
     )

@@ -19,6 +19,7 @@ class TWRevenueInsightResponse(BaseModel):
     latestRevenueK: int | None = None
     latestMomPercent: float | None = None
     latestYoyPercent: float | None = None
+    stale: bool = False
     points: list[TWRevenuePointResponse] = []
 
 

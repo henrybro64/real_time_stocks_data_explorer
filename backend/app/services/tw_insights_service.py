@@ -63,6 +63,7 @@ def _load_official_revenue(stock: StockRecord) -> dict[str, object]:
         "latestRevenueK": None,
         "latestMomPercent": None,
         "latestYoyPercent": None,
+        "stale": False,
         "points": [],
     }
     try:
@@ -122,6 +123,7 @@ def _load_official_revenue(stock: StockRecord) -> dict[str, object]:
         "latestRevenueK": latest_revenue_k,
         "latestMomPercent": observation.get("momPercent"),
         "latestYoyPercent": observation.get("yoyPercent"),
+        "stale": bool(observation.get("stale")),
         "points": points,
     }
 

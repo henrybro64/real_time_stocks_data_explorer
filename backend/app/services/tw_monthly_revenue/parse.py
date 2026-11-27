@@ -256,23 +256,70 @@ def parse_revenue_row(raw: object, *, board: str) -> tuple[ParsedRevenueRow | No
     return row.with_hash(), errors
 
 
-def parse_revenue_dataset(payload: object, *, board: str) -> tuple[list[ParsedRevenueRow], list[str]]:
+@dataclass(frozen=True)
+class ParsedRevenueDataset:
+    rows: list[ParsedRevenueRow]
+    row_rejects: list[str]
+    row_warnings: list[str]
+    dataset_errors: list[str]
+    payload_total_rows: int
+
+    @property
+    def parse_errors(self) -> list[str]:
+        """Backward-compatible flat error list for older call sites."""
+        return [*self.dataset_errors, *self.row_rejects, *self.row_warnings]
+
+
+def parse_revenue_dataset(
+    payload: object, *, board: str
+) -> tuple[list[ParsedRevenueRow], list[str]]:
+    """Parse a market-wide payload.
+
+    Returns ``(rows, flat_errors)`` for compatibility. Prefer
+    :func:`parse_revenue_dataset_detailed` when row-reject budgeting is needed.
+    """
+    detailed = parse_revenue_dataset_detailed(payload, board=board)
+    return detailed.rows, detailed.parse_errors
+
+
+def parse_revenue_dataset_detailed(payload: object, *, board: str) -> ParsedRevenueDataset:
     if not isinstance(payload, list):
-        return [], ["payload_not_array"]
+        return ParsedRevenueDataset(
+            rows=[],
+            row_rejects=[],
+            row_warnings=[],
+            dataset_errors=["payload_not_array"],
+            payload_total_rows=0,
+        )
     if not payload:
-        return [], ["empty_dataset"]
+        return ParsedRevenueDataset(
+            rows=[],
+            row_rejects=[],
+            row_warnings=[],
+            dataset_errors=["empty_dataset"],
+            payload_total_rows=0,
+        )
 
     rows: list[ParsedRevenueRow] = []
-    errors: list[str] = []
+    row_rejects: list[str] = []
+    row_warnings: list[str] = []
     for index, item in enumerate(payload):
         parsed, row_errors = parse_revenue_row(item, board=board)
         if parsed is None:
-            errors.append(f"row[{index}]:{','.join(row_errors)}")
+            # Rows without current-month revenue (or other required fields) are never stored.
+            row_rejects.append(f"row[{index}]:{','.join(row_errors)}")
             continue
-        if row_errors:
-            errors.extend(f"row[{index}]:{err}" for err in row_errors)
+        for err in row_errors:
+            # Non-fatal per-row warnings (e.g. invalid 出表日期).
+            row_warnings.append(f"row[{index}]:{err}")
         rows.append(parsed)
-    return rows, errors
+    return ParsedRevenueDataset(
+        rows=rows,
+        row_rejects=row_rejects,
+        row_warnings=row_warnings,
+        dataset_errors=[],
+        payload_total_rows=len(payload),
+    )
 
 
 def observation_values_dict(row: ParsedRevenueRow) -> dict[str, Any]:

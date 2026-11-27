@@ -46,6 +46,9 @@ def test_monthly_revenue_migration_upgrade_preserves_prior_tables(tmp_path, monk
     assert "tw_fundamental_raw_fetches" in tables
     assert "tw_monthly_revenue_observations" in tables
     assert "tw_monthly_revenue_revisions" in tables
+    raw_columns = {col["name"] for col in inspector.get_columns("tw_fundamental_raw_fetches")}
+    assert "body_ref_fetch_id" in raw_columns
+    assert "raw_body" in raw_columns
     with engine.begin() as conn:
         if "users" in tables:
             row = conn.execute(text("SELECT username FROM users WHERE id='u-mig'")).fetchone()

@@ -7,11 +7,15 @@ from app.services.tw_monthly_revenue.parse import (
     normalize_company_code,
     parse_optional_number,
     parse_revenue_dataset,
+    parse_revenue_dataset_detailed,
     parse_revenue_row,
     roc_yyyymm_to_gregorian,
     roc_yyyymmdd_to_date,
 )
-from app.services.tw_monthly_revenue.validate import validate_revenue_dataset
+from app.services.tw_monthly_revenue.validate import (
+    max_tolerated_row_rejects,
+    validate_revenue_dataset,
+)
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "tw_monthly_revenue"
 
@@ -86,3 +90,62 @@ def test_wrong_period_mix_rejected() -> None:
     )
     assert validation.ok is False
     assert any("mixed_reporting_periods" in err for err in validation.errors)
+
+
+def test_one_bad_row_out_of_820_accepted_with_bounded_errors() -> None:
+    payload = _load("twse_latest_month.json")
+    assert len(payload) == 820
+    payload = [dict(row) for row in payload]
+    payload[0]["營業收入-當月營收"] = "N/A"
+    detailed = parse_revenue_dataset_detailed(payload, board="TWSE")
+    assert len(detailed.row_rejects) == 1
+    validation = validate_revenue_dataset(
+        detailed.rows,
+        board="TWSE",
+        row_rejects=detailed.row_rejects,
+        row_warnings=detailed.row_warnings,
+        dataset_errors=detailed.dataset_errors,
+        payload_total_rows=detailed.payload_total_rows,
+    )
+    assert validation.ok is True
+    assert validation.row_count == 819
+    assert validation.row_rejects_total == 1
+    assert any(err.startswith("row_rejects_total:") for err in validation.errors)
+    assert len([err for err in validation.errors if err.startswith("row[")]) <= 50
+
+
+def test_ten_bad_rows_out_of_820_rejected() -> None:
+    payload = [dict(row) for row in _load("twse_latest_month.json")]
+    for index in range(10):
+        payload[index]["營業收入-當月營收"] = ""
+    detailed = parse_revenue_dataset_detailed(payload, board="TWSE")
+    assert len(detailed.row_rejects) == 10
+    assert max_tolerated_row_rejects(820) == 5
+    validation = validate_revenue_dataset(
+        detailed.rows,
+        board="TWSE",
+        row_rejects=detailed.row_rejects,
+        row_warnings=detailed.row_warnings,
+        dataset_errors=detailed.dataset_errors,
+        payload_total_rows=detailed.payload_total_rows,
+    )
+    assert validation.ok is False
+    assert any("excessive_row_rejects" in err for err in validation.errors)
+
+
+def test_invalid_report_generated_date_is_non_fatal() -> None:
+    payload = [dict(row) for row in _load("twse_latest_month.json")]
+    payload[3]["出表日期"] = "not-a-date"
+    detailed = parse_revenue_dataset_detailed(payload, board="TWSE")
+    assert detailed.row_rejects == []
+    assert any("invalid_report_generated_date" in err for err in detailed.row_warnings)
+    validation = validate_revenue_dataset(
+        detailed.rows,
+        board="TWSE",
+        row_rejects=detailed.row_rejects,
+        row_warnings=detailed.row_warnings,
+        dataset_errors=detailed.dataset_errors,
+        payload_total_rows=detailed.payload_total_rows,
+    )
+    assert validation.ok is True
+    assert validation.row_count == 820

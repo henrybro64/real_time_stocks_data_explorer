@@ -365,6 +365,7 @@ def fetch_json(
     resource_id: str | None = None,
     retryable_status_codes: frozenset[int] | None = None,
     retry_rate_limits: bool = True,
+    accept_status_codes: frozenset[int] = frozenset(),
 ) -> object:
     response = _request_with_retries(
         url,
@@ -381,6 +382,7 @@ def fetch_json(
         resource_id=resource_id,
         retryable_status_codes=retryable_status_codes,
         retry_rate_limits=retry_rate_limits,
+        accept_status_codes=accept_status_codes,
     )
     content_type = response.headers.get("content-type")
     try:
@@ -424,6 +426,7 @@ def fetch_response_meta(
     resource_id: str | None = None,
     retryable_status_codes: frozenset[int] | None = None,
     retry_rate_limits: bool = True,
+    accept_status_codes: frozenset[int] = frozenset({304}),
 ) -> HttpResponseMeta:
     """Fetch bytes + headers without requiring a JSON body (supports 304)."""
     response = _request_with_retries(
@@ -441,6 +444,7 @@ def fetch_response_meta(
         resource_id=resource_id,
         retryable_status_codes=retryable_status_codes,
         retry_rate_limits=retry_rate_limits,
+        accept_status_codes=accept_status_codes,
     )
     return HttpResponseMeta(
         status_code=response.status_code,
@@ -467,6 +471,7 @@ def fetch_text(
     resource_id: str | None = None,
     retryable_status_codes: frozenset[int] | None = None,
     retry_rate_limits: bool = True,
+    accept_status_codes: frozenset[int] = frozenset(),
 ) -> str:
     response = _request_with_retries(
         url,
@@ -483,6 +488,7 @@ def fetch_text(
         resource_id=resource_id,
         retryable_status_codes=retryable_status_codes,
         retry_rate_limits=retry_rate_limits,
+        accept_status_codes=accept_status_codes,
     )
     if encoding:
         response.encoding = encoding
@@ -505,6 +511,7 @@ def _request_with_retries(
     resource_id: str | None,
     retryable_status_codes: frozenset[int] | None = None,
     retry_rate_limits: bool = True,
+    accept_status_codes: frozenset[int] = frozenset(),
     jitter_random: Callable[[], float] | None = None,
 ) -> httpx.Response:
     if data is not None and json_body is not None:
@@ -516,6 +523,7 @@ def _request_with_retries(
         if retryable_status_codes is None
         else retryable_status_codes
     )
+    accepted_statuses = frozenset(accept_status_codes or ())
     last_error: Exception | None = None
     last_status_code: int | None = None
     last_content_type: str | None = None
@@ -578,6 +586,31 @@ def _request_with_retries(
             )
             last_status_code = response.status_code
             last_content_type = response.headers.get("content-type")
+            if response.status_code in accepted_statuses:
+                duration = elapsed_ms(started_at)
+                body_len = len(response.content or b"")
+                record_provider_budget_event(
+                    effective_provider,
+                    bytes_downloaded=body_len,
+                    latency_ms=float(duration),
+                )
+                logger.debug(
+                    "External HTTP request completed",
+                    extra={
+                        "event": "external_http.request.completed",
+                        "provider": effective_provider,
+                        "operation": operation,
+                        "resource_id": resource_id,
+                        "upstream_host": host,
+                        "upstream_path": upstream_path,
+                        "status_code": response.status_code,
+                        "content_type": last_content_type,
+                        "attempts": attempt + 1,
+                        "duration_ms": duration,
+                        "accepted_non_success_status": True,
+                    },
+                )
+                return response
             if response.status_code in effective_retryable:
                 retry_after = parse_retry_after_seconds(
                     response.headers.get("retry-after")

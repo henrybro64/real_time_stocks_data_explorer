@@ -498,11 +498,13 @@ export type TranslationKey =
   | "twInsights.revenue.latest"
   | "twInsights.revenue.unavailable"
   | "twInsights.revenue.singleMonthNote"
+  | "twInsights.revenue.stale"
   | "twInsights.peer.title"
   | "twInsights.peer.period"
   | "twInsights.peer.company"
   | "twInsights.peer.industry"
   | "twInsights.peer.rank"
+  | "twInsights.peer.metricsUnavailable"
   | "twInsights.dividend.title"
   | "twInsights.dividend.unavailable"
   | "twInsights.dividend.avg2y"
@@ -1131,11 +1133,14 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Official monthly revenue has not been collected for this symbol yet.",
     "twInsights.revenue.singleMonthNote":
       "Showing the latest official reporting month only; a multi-month trend requires historical collection.",
+    "twInsights.revenue.stale": "stale",
     "twInsights.peer.title": "Peer performance snapshot",
     "twInsights.peer.period": "Period",
     "twInsights.peer.company": "Company",
     "twInsights.peer.industry": "Industry avg",
     "twInsights.peer.rank": "Rank",
+    "twInsights.peer.metricsUnavailable":
+      "Peer performance metrics are unavailable for this symbol.",
     "twInsights.dividend.title": "Dividend history",
     "twInsights.dividend.unavailable":
       "Official dividend history is not collected yet; values are not invented.",
@@ -1691,11 +1696,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "twInsights.revenue.latest": "最新",
     "twInsights.revenue.unavailable": "尚未收集此股票的官方月營收。",
     "twInsights.revenue.singleMonthNote": "目前僅顯示最新官方申報月份；多月趨勢需歷史收集。",
+    "twInsights.revenue.stale": "資料偏舊",
     "twInsights.peer.title": "同業表現快照",
     "twInsights.peer.period": "期間",
     "twInsights.peer.company": "公司",
     "twInsights.peer.industry": "同業平均",
     "twInsights.peer.rank": "排名",
+    "twInsights.peer.metricsUnavailable": "此股票尚無同業表現指標。",
     "twInsights.dividend.title": "歷年股利",
     "twInsights.dividend.unavailable": "尚未收集官方股利歷史；不會以合成數值代替。",
     "twInsights.dividend.avg2y": "近2年平均現金殖利率",

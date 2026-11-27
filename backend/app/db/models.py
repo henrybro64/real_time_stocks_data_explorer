@@ -956,6 +956,13 @@ class TwFundamentalRawFetch(Base):
     body_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     body_bytes: Mapped[int | None] = mapped_column(nullable=True)
     raw_body: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    body_ref_fetch_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "tw_fundamental_raw_fetches.id",
+            name="fk_tw_fundamental_raw_fetches_body_ref",
+        ),
+        nullable=True,
+    )
     reporting_period_yyyymm: Mapped[str | None] = mapped_column(String(6), nullable=True)
     report_generated_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
     parser_version: Mapped[str] = mapped_column(String(32), nullable=False)

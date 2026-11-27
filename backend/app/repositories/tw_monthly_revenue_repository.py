@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -18,6 +18,7 @@ from app.services.tw_monthly_revenue.parse import (
     ParsedRevenueRow,
     observation_values_dict,
 )
+from app.services.tw_monthly_revenue.validate import VALIDATION_ERROR_CAP, cap_validation_errors
 
 DATASET_MONTHLY_REVENUE = "monthly_revenue"
 
@@ -28,12 +29,68 @@ def get_last_accepted_raw_fetch(
     board: str,
     dataset: str = DATASET_MONTHLY_REVENUE,
 ) -> TwFundamentalRawFetch | None:
+    """Latest accepted fetch that has a body or a resolvable body reference."""
     stmt = (
         select(TwFundamentalRawFetch)
         .where(
             TwFundamentalRawFetch.board == board,
             TwFundamentalRawFetch.dataset == dataset,
             TwFundamentalRawFetch.validation_status == "accepted",
+            or_(
+                TwFundamentalRawFetch.raw_body.is_not(None),
+                TwFundamentalRawFetch.body_ref_fetch_id.is_not(None),
+            ),
+        )
+        .order_by(TwFundamentalRawFetch.fetched_at.desc(), TwFundamentalRawFetch.id.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def resolve_raw_body(
+    session: Session,
+    fetch: TwFundamentalRawFetch | None,
+) -> bytes | None:
+    """Return bytes for a fetch, following at most one body_ref_fetch_id hop."""
+    if fetch is None:
+        return None
+    if fetch.raw_body is not None:
+        return bytes(fetch.raw_body)
+    if fetch.body_ref_fetch_id is None:
+        return None
+    ref = session.get(TwFundamentalRawFetch, fetch.body_ref_fetch_id)
+    if ref is None:
+        return None
+    if ref.raw_body is not None:
+        return bytes(ref.raw_body)
+    return None
+
+
+def resolve_etag(session: Session, fetch: TwFundamentalRawFetch | None) -> str | None:
+    if fetch is None:
+        return None
+    if fetch.etag:
+        return fetch.etag
+    if fetch.body_ref_fetch_id is None:
+        return None
+    ref = session.get(TwFundamentalRawFetch, fetch.body_ref_fetch_id)
+    return ref.etag if ref is not None else None
+
+
+def find_prior_body_fetch(
+    session: Session,
+    *,
+    board: str,
+    body_sha256: str,
+    dataset: str = DATASET_MONTHLY_REVENUE,
+) -> TwFundamentalRawFetch | None:
+    """Most recent stored body (accepted or rejected) with the same SHA-256."""
+    stmt = (
+        select(TwFundamentalRawFetch)
+        .where(
+            TwFundamentalRawFetch.board == board,
+            TwFundamentalRawFetch.dataset == dataset,
+            TwFundamentalRawFetch.body_sha256 == body_sha256,
             TwFundamentalRawFetch.raw_body.is_not(None),
         )
         .order_by(TwFundamentalRawFetch.fetched_at.desc(), TwFundamentalRawFetch.id.desc())
@@ -111,7 +168,13 @@ def create_raw_fetch(
     validation_errors: list[str],
     row_count: int | None,
     error_message: str | None,
+    body_ref_fetch_id: int | None = None,
 ) -> TwFundamentalRawFetch:
+    capped_errors = cap_validation_errors(
+        list(validation_errors),
+        limit=VALIDATION_ERROR_CAP,
+    )
+
     row = TwFundamentalRawFetch(
         source=source,
         dataset=DATASET_MONTHLY_REVENUE,
@@ -126,11 +189,12 @@ def create_raw_fetch(
         body_sha256=body_sha256,
         body_bytes=body_bytes,
         raw_body=raw_body,
+        body_ref_fetch_id=body_ref_fetch_id,
         reporting_period_yyyymm=reporting_period_yyyymm,
         report_generated_date=report_generated_date,
         parser_version=parser_version,
         validation_status=validation_status,
-        validation_errors_json=list(validation_errors),
+        validation_errors_json=capped_errors,
         row_count=row_count,
         error_message=error_message,
     )
@@ -154,6 +218,9 @@ def apply_accepted_rows(
     revised = 0
 
     for parsed in rows:
+        if parsed.revenue_nt_thousand is None:
+            # Defense in depth: never persist rows lacking current-month revenue.
+            continue
         existing = session.execute(
             select(TwMonthlyRevenueObservation).where(
                 TwMonthlyRevenueObservation.stock_id == parsed.stock_id,
